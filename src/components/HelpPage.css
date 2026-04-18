@@ -1,0 +1,148 @@
+/* Help page layout */
+.gpu-help-layout {
+  display: flex;
+}
+
+.gpu-help-sidebar {
+  width: 260px;
+  min-width: 260px;
+  border-right: 1px solid var(--pf-t--global--border--color--default);
+  background: var(--pf-t--global--background--color--secondary--default);
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+}
+
+.gpu-help-content {
+  flex: 1;
+  max-width: 900px;
+}
+
+/* Markdown content styles */
+.gpu-help-markdown p {
+  margin-bottom: 12px;
+  line-height: 1.6;
+}
+
+.gpu-help-markdown ul,
+.gpu-help-markdown ol {
+  margin-bottom: 12px;
+  padding-left: 24px;
+}
+
+.gpu-help-markdown li {
+  margin-bottom: 4px;
+  line-height: 1.6;
+}
+
+.gpu-help-markdown blockquote {
+  border-left: 3px solid var(--pf-t--global--color--brand--default);
+  padding: 8px 16px;
+  margin: 12px 0;
+  background: var(--pf-t--global--background--color--secondary--default);
+  border-radius: 0 4px 4px 0;
+}
+
+.gpu-help-markdown hr {
+  border: none;
+  border-top: 1px solid var(--pf-t--global--border--color--default);
+  margin: 24px 0;
+}
+
+.gpu-help-markdown strong {
+  font-weight: 600;
+}
+
+/* Tables */
+.gpu-help-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 16px;
+  font-size: 14px;
+}
+
+.gpu-help-table th,
+.gpu-help-table td {
+  border: 1px solid var(--pf-t--global--border--color--default);
+  padding: 8px 12px;
+  text-align: left;
+}
+
+.gpu-help-table th {
+  background: var(--pf-t--global--background--color--secondary--default);
+  font-weight: 600;
+}
+
+.gpu-help-table tr:nth-child(even) {
+  background: var(--pf-t--global--background--color--secondary--default);
+}
+
+/* Code */
+.gpu-help-inline-code {
+  background: var(--pf-t--global--background--color--secondary--default);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: 'RedHatMono', 'Liberation Mono', monospace;
+  font-size: 0.9em;
+}
+
+.gpu-help-codeblock {
+  background: #1e1e1e;
+  color: #d4d4d4;
+  padding: 16px;
+  border-radius: 4px;
+  overflow-x: auto;
+  font-family: 'RedHatMono', 'Liberation Mono', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: 16px;
+}
+
+/* Badges from original Docsify markup */
+.gpu-help-markdown .badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: white;
+  background: #383838;
+  margin: 0 2px;
+}
+
+.gpu-help-markdown .badge.badge-info {
+  background: var(--pf-t--global--color--brand--default);
+}
+
+.gpu-help-markdown .badge.badge-success {
+  background: #1e7e34;
+}
+
+.gpu-help-markdown .badge.badge-warning {
+  background: #f0ab00;
+  color: #1a1a1a;
+}
+
+.gpu-help-markdown .badge.badge-danger {
+  background: #c9190b;
+}
+
+/* Pagination */
+.gpu-help-pagination {
+  display: flex;
+  justify-content: space-between;
+  padding: 24px 0;
+  margin-top: 24px;
+  border-top: 1px solid var(--pf-t--global--border--color--default);
+}
+
+.gpu-help-pagination-link {
+  color: var(--pf-t--global--color--brand--default);
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.gpu-help-pagination-link:hover {
+  text-decoration: underline;
+}

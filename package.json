@@ -51,7 +51,10 @@
     "@babel/core": "^7.25.2",
     "@babel/preset-env": "^7.25.3",
     "@babel/preset-react": "^7.24.7",
-    "babel-loader": "^8.2.0"
+    "babel-loader": "^8.2.0",
+    "react-markdown": "^10.1.0",
+    "rehype-raw": "^7.0.0",
+    "remark-gfm": "^4.0.1"
   },
   "consolePlugin": {
     "name": "gpu-booking-plugin",
@@ -60,7 +63,8 @@
     "description": "GPU resource reservation system with Kueue integration",
     "exposedModules": {
       "BookingPage": "./components/BookingPage",
-      "AdminPage": "./components/AdminPage"
+      "AdminPage": "./components/AdminPage",
+      "HelpPage": "./components/HelpPage"
     },
     "dependencies": {
       "@console/pluginAPI": "*"

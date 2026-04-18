@@ -54,6 +54,10 @@ const config: Configuration = {
         use: ['style-loader', 'css-loader'],
       },
       {
+        test: /\.md$/,
+        type: 'asset/source',
+      },
+      {
         test: /\.(png|jpg|jpeg|gif|svg|woff2?|ttf|eot|otf)(\?.*$|$)/,
         type: 'asset/resource',
         generator: {

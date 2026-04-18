@@ -13,7 +13,8 @@ import {
   EmptyState,
   EmptyStateBody,
 } from '@patternfly/react-core';
-import { SyncIcon, UserIcon } from '@patternfly/react-icons';
+import { SyncIcon, UserIcon, OutlinedQuestionCircleIcon } from '@patternfly/react-icons';
+import { Link } from 'react-router-dom';
 import { useAuth } from '../utils/AuthContext';
 import {
   getBookings,
@@ -256,6 +257,16 @@ const BookingPage: React.FC = () => {
                   >
                     Refresh
                   </Button>
+                </ToolbarItem>
+                <ToolbarItem>
+                  <Link to="/gpu-booking/help/getting-started" style={{ textDecoration: 'none' }}>
+                    <Button
+                      variant="secondary"
+                      icon={<OutlinedQuestionCircleIcon />}
+                    >
+                      Help
+                    </Button>
+                  </Link>
                 </ToolbarItem>
               </ToolbarContent>
             </Toolbar>

@@ -41,5 +41,22 @@
       "perspective": "admin",
       "section": "gpu-booking"
     }
+  },
+  {
+    "type": "console.page/route",
+    "properties": {
+      "path": "/gpu-booking/help/:topic?",
+      "component": { "$codeRef": "HelpPage" }
+    }
+  },
+  {
+    "type": "console.navigation/href",
+    "properties": {
+      "id": "gpu-help",
+      "name": "Help",
+      "href": "/gpu-booking/help/getting-started",
+      "perspective": "admin",
+      "section": "gpu-booking"
+    }
   }
 ]
