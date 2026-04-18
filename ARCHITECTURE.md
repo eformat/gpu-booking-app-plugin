@@ -146,9 +146,9 @@ GET    /api/health                   → health check + namespace
 
 ### Username Sanitization
 
-The console plugin receives full email addresses from `TokenReview` (e.g. `mhepburn@redhat.com`), whereas the original standalone app received short usernames from OAuth proxy `X-Forwarded-User`. Kubernetes resource names must be valid RFC 1123 DNS labels, so:
+The console plugin receives full email addresses from `TokenReview` (e.g. `cluster-admin@redhat.com`), whereas the original standalone app received short usernames from OAuth proxy `X-Forwarded-User`. Kubernetes resource names must be valid RFC 1123 DNS labels, so:
 
-- `@` and domain are stripped: `mhepburn@redhat.com` → `mhepburn`
+- `@` and domain are stripped: `cluster-admin@redhat.com` → `mhepburn`
 - Invalid characters replaced with `-`
 - Result trimmed of leading/trailing `-` and `.`
 - Truncated to 253 characters

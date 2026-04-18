@@ -18,7 +18,7 @@ import (
 
 const reservationCleanInterval = 10 * time.Minute
 
-// sanitizeK8sName converts a username (e.g. "mhepburn@redhat.com") into a
+// sanitizeK8sName converts a username (e.g. "cluster-admin@redhat.com") into a
 // valid Kubernetes resource name by stripping the @domain suffix and replacing
 // any invalid characters. This matches the namespace convention (e.g. "user-mhepburn").
 func sanitizeK8sName(name string) string {

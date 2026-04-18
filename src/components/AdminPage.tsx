@@ -44,6 +44,8 @@ import {
   adminImportDatabase,
   AdminResponse,
 } from '../utils/api';
+import { GPUResource, FALLBACK_GPU_RESOURCES } from '../utils/constants';
+import ResourceSelector from './ResourceSelector';
 
 type SortKey = 'id' | 'user' | 'resource' | 'slotIndex' | 'date' | 'source' | 'createdAt';
 
@@ -59,11 +61,17 @@ const AdminPage: React.FC = () => {
   const [showDeleteAll, setShowDeleteAll] = React.useState(false);
   const [importFile, setImportFile] = React.useState<File | null>(null);
   const [importFilename, setImportFilename] = React.useState('');
+  const [gpuResources, setGpuResources] = React.useState<GPUResource[]>(FALLBACK_GPU_RESOURCES);
+  const [selectedResources, setSelectedResources] = React.useState<string[]>([]);
 
   const fetchData = React.useCallback(async () => {
     try {
       const result = await adminGetBookings();
       setData(result);
+      if (result.config?.resources?.length > 0) {
+        setGpuResources(result.config.resources);
+        setSelectedResources((prev) => prev.length === 0 ? result.config.resources.map((r) => r.type) : prev);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load admin data');
     }
@@ -143,6 +151,7 @@ const AdminPage: React.FC = () => {
 
   // Filter
   const filtered = bookings.filter((b) => {
+    if (selectedResources.length > 0 && !selectedResources.includes(b.resource)) return false;
     if (!filter) return true;
     const q = filter.toLowerCase();
     return (
@@ -244,6 +253,15 @@ const AdminPage: React.FC = () => {
               </Split>
             </CardBody>
           </Card>
+
+          {/* Resource filter */}
+          <div style={{ marginBottom: '16px' }}>
+            <ResourceSelector
+              resources={gpuResources}
+              selectedResources={selectedResources}
+              onSelectionChange={setSelectedResources}
+            />
+          </div>
 
           {/* Toolbar */}
           <Toolbar>
