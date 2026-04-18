@@ -172,6 +172,8 @@ The system manages a single H200 node with the following GPU resources:
 
 All Kueue resources share a single flat Cohort. User reservations carve out protected quota from the shared pool.
 
+![Kueue Resource Hierarchy](images/kueue-resource-hierarchy.png)
+
 ### Resource Relationships
 
 When a user has an active reservation, three Kubernetes resources are created:
@@ -202,6 +204,8 @@ Remaining = Cohort nominalQuota (shared pool)
 
 The preemption design ensures user reservations are pre-eminent over unreserved workloads.
 
+![Preemption Model](images/preemption-model.png)
+
 | Queue Type | `reclaimWithinCohort` | `borrowWithinCohort` | Effect |
 |---|---|---|---|
 | `user-<name>` | `Any` | `Never` | Can reclaim quota from borrowing workloads; cannot borrow beyond reservation |
@@ -217,6 +221,8 @@ The preemption design ensures user reservations are pre-eminent over unreserved 
 ## Consumed vs Reserved Bookings
 
 The system tracks two types of bookings that interact through a priority-based conflict resolution model.
+
+![Consumed vs Reserved Booking Flow](images/consumed-vs-reserved-booking-flow.png)
 
 | Property | Reserved | Consumed |
 |----------|----------|----------|
@@ -237,6 +243,8 @@ The system tracks two types of bookings that interact through a priority-based c
 ## Sync Lifecycle
 
 Three independent sync loops run concurrently in the Go backend.
+
+![Sync Lifecycle](images/sync-lifecycle.png)
 
 ### 1. Kueue Sync Loop (every 30s)
 
