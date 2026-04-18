@@ -1,0 +1,134 @@
+/* Calendar grid styles */
+.gpu-calendar-container {
+  border: 1px solid var(--pf-t--global--border--color--default);
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 16px;
+  background: var(--pf-t--global--background--color--primary--default);
+}
+
+.gpu-calendar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.gpu-calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+
+.gpu-calendar-day-header {
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--pf-t--global--text--color--regular);
+  opacity: 0.7;
+  padding: 4px 0;
+}
+
+.gpu-calendar-cell {
+  height: 64px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  border: 1px solid var(--pf-t--global--border--color--default);
+  background: var(--pf-t--global--background--color--primary--default);
+  cursor: pointer;
+  transition: all 0.15s;
+  position: relative;
+  padding: 0;
+  font-family: inherit;
+}
+
+.gpu-calendar-cell:hover:not(:disabled) {
+  background: var(--pf-t--global--background--color--secondary--default);
+  border-color: var(--pf-t--global--border--color--hover);
+}
+
+.gpu-calendar-cell--empty {
+  border: none;
+  cursor: default;
+}
+
+.gpu-calendar-cell--selected {
+  border-color: var(--pf-t--global--color--brand--default);
+  background: var(--pf-t--global--background--color--brand--default);
+  box-shadow: 0 0 0 2px rgba(0, 102, 204, 0.2);
+}
+
+.gpu-calendar-cell--today,
+.gpu-calendar-cell--today.gpu-calendar-cell--selected {
+  border-color: var(--pf-t--global--color--nonstatus--red--default);
+  background: rgba(238, 0, 0, 0.05);
+  box-shadow: 0 0 0 2px rgba(238, 0, 0, 0.15);
+}
+
+.gpu-calendar-cell--disabled {
+  border-color: transparent;
+  background: var(--pf-t--global--background--color--secondary--default);
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.gpu-calendar-cell--past {
+  background: var(--pf-t--global--background--color--secondary--default);
+  opacity: 0.8;
+}
+
+.gpu-calendar-cell--weekend {
+  background: var(--pf-t--global--background--color--secondary--default);
+}
+
+.gpu-calendar-today-badge {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  font-size: 8px;
+  font-weight: bold;
+  color: var(--pf-t--global--color--nonstatus--red--default);
+}
+
+.gpu-calendar-day-number {
+  font-size: 18px;
+  font-weight: bold;
+  color: var(--pf-t--global--text--color--regular);
+}
+
+.gpu-calendar-day-number--highlight {
+  color: var(--pf-t--global--color--brand--default);
+}
+
+.gpu-calendar-day-number--today {
+  color: var(--pf-t--global--color--nonstatus--red--default);
+}
+
+.gpu-calendar-usage-badge {
+  font-size: 9px;
+  padding: 0 6px;
+  border-radius: 999px;
+  margin-top: 2px;
+  background: #383838;
+  color: white;
+  line-height: 1.4;
+}
+
+.gpu-calendar-usage-badge--full {
+  background: var(--pf-t--global--color--nonstatus--red--default);
+}
+
+/* GPU usage bar hover to show username */
+.gpu-usage-bar-label {
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.gpu-usage-bar-segment:hover .gpu-usage-bar-label {
+  opacity: 1;
+}

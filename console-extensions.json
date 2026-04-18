@@ -1,0 +1,45 @@
+[
+  {
+    "type": "console.navigation/section",
+    "properties": {
+      "id": "gpu-booking",
+      "name": "GPU Booking"
+    }
+  },
+  {
+    "type": "console.page/route",
+    "properties": {
+      "exact": true,
+      "path": "/gpu-booking/bookings",
+      "component": { "$codeRef": "BookingPage" }
+    }
+  },
+  {
+    "type": "console.page/route",
+    "properties": {
+      "exact": true,
+      "path": "/gpu-booking/admin",
+      "component": { "$codeRef": "AdminPage" }
+    }
+  },
+  {
+    "type": "console.navigation/href",
+    "properties": {
+      "id": "gpu-bookings",
+      "name": "Bookings",
+      "href": "/gpu-booking/bookings",
+      "perspective": "admin",
+      "section": "gpu-booking"
+    }
+  },
+  {
+    "type": "console.navigation/href",
+    "properties": {
+      "id": "gpu-admin",
+      "name": "Administration",
+      "href": "/gpu-booking/admin",
+      "perspective": "admin",
+      "section": "gpu-booking"
+    }
+  }
+]

@@ -1,0 +1,354 @@
+import * as React from 'react';
+import { Helmet } from 'react-helmet';
+import {
+  PageSection,
+  Title,
+  Button,
+  Alert,
+  Spinner,
+  Bullseye,
+  Toolbar,
+  ToolbarContent,
+  ToolbarItem,
+  TextInput,
+  Switch,
+  Card,
+  CardBody,
+  Label,
+  Modal,
+  ModalVariant,
+  ModalHeader,
+  ModalBody,
+  ModalFooter,
+  FileUpload,
+  Split,
+  SplitItem,
+} from '@patternfly/react-core';
+import { SyncIcon, DownloadIcon, UploadIcon, TrashIcon } from '@patternfly/react-icons';
+import {
+  Table,
+  Thead,
+  Tr,
+  Th,
+  Tbody,
+  Td,
+  ThProps,
+} from '@patternfly/react-table';
+import { useAuth } from '../utils/AuthContext';
+import {
+  adminGetBookings,
+  adminDeleteBooking,
+  adminDeleteAllBookings,
+  adminToggleReservationSync,
+  adminExportDatabase,
+  adminImportDatabase,
+  AdminResponse,
+} from '../utils/api';
+
+type SortKey = 'id' | 'user' | 'resource' | 'slotIndex' | 'date' | 'source' | 'createdAt';
+
+const AdminPage: React.FC = () => {
+  const { isAdmin, loading: authLoading } = useAuth();
+  const [data, setData] = React.useState<AdminResponse | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<string | null>(null);
+  const [filter, setFilter] = React.useState('');
+  const [sortKey, setSortKey] = React.useState<SortKey>('date');
+  const [sortDir, setSortDir] = React.useState<'asc' | 'desc'>('desc');
+  const [confirmDeleteId, setConfirmDeleteId] = React.useState<string | null>(null);
+  const [showDeleteAll, setShowDeleteAll] = React.useState(false);
+  const [importFile, setImportFile] = React.useState<File | null>(null);
+  const [importFilename, setImportFilename] = React.useState('');
+
+  const fetchData = React.useCallback(async () => {
+    try {
+      const result = await adminGetBookings();
+      setData(result);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load admin data');
+    }
+    setLoading(false);
+  }, []);
+
+  React.useEffect(() => {
+    if (!authLoading && isAdmin) {
+      fetchData();
+      const interval = setInterval(fetchData, 30000);
+      return () => clearInterval(interval);
+    }
+  }, [authLoading, isAdmin, fetchData]);
+
+  const handleDelete = async (id: string) => {
+    try {
+      await adminDeleteBooking(id);
+      setConfirmDeleteId(null);
+      await fetchData();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Delete failed');
+    }
+  };
+
+  const handleDeleteAll = async () => {
+    try {
+      await adminDeleteAllBookings();
+      setShowDeleteAll(false);
+      await fetchData();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Delete all failed');
+    }
+  };
+
+  const handleToggleSync = async (enabled: boolean) => {
+    try {
+      const result = await adminToggleReservationSync(enabled);
+      setData((prev) => prev ? { ...prev, reservationSyncEnabled: result.reservationSyncEnabled } : prev);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Toggle failed');
+    }
+  };
+
+  const handleImport = async () => {
+    if (!importFile) return;
+    try {
+      await adminImportDatabase(importFile);
+      setImportFile(null);
+      setImportFilename('');
+      await fetchData();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Import failed');
+    }
+  };
+
+  if (authLoading || loading) {
+    return (
+      <Bullseye>
+        <Spinner size="xl" />
+      </Bullseye>
+    );
+  }
+
+  if (!isAdmin) {
+    return (
+      <>
+        <PageSection>
+          <Alert variant="danger" title="Access Denied" isInline>
+            You do not have admin privileges. Contact your cluster administrator.
+          </Alert>
+        </PageSection>
+      </>
+    );
+  }
+
+  const bookings = data?.bookings || [];
+
+  // Filter
+  const filtered = bookings.filter((b) => {
+    if (!filter) return true;
+    const q = filter.toLowerCase();
+    return (
+      b.user.toLowerCase().includes(q) ||
+      b.date.includes(q) ||
+      b.resource.toLowerCase().includes(q) ||
+      b.source.toLowerCase().includes(q) ||
+      (b.description || '').toLowerCase().includes(q)
+    );
+  });
+
+  // Sort
+  const sorted = [...filtered].sort((a, b) => {
+    const aVal = a[sortKey] as string | number;
+    const bVal = b[sortKey] as string | number;
+    const cmp = aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
+    return sortDir === 'asc' ? cmp : -cmp;
+  });
+
+  const getSortParams = (key: SortKey): ThProps['sort'] => ({
+    sortBy: {
+      index: ['id', 'user', 'resource', 'slotIndex', 'date', 'source', 'createdAt'].indexOf(sortKey),
+      direction: sortDir,
+    },
+    onSort: (_e, _index, direction) => {
+      setSortKey(key);
+      setSortDir(direction);
+    },
+    columnIndex: ['id', 'user', 'resource', 'slotIndex', 'date', 'source', 'createdAt'].indexOf(key),
+  });
+
+  return (
+    <>
+      <Helmet>
+        <title>GPU Booking - Administration</title>
+      </Helmet>
+      <>
+        <PageSection>
+          <Title headingLevel="h1" size="2xl">
+            GPU Booking Administration
+          </Title>
+        </PageSection>
+
+        <PageSection>
+          {error && (
+            <Alert
+              variant="danger"
+              title={error}
+              isInline
+              actionClose={<Button variant="plain" onClick={() => setError(null)}>&times;</Button>}
+              style={{ marginBottom: '16px' }}
+            />
+          )}
+
+          {/* Admin controls */}
+          <Card style={{ marginBottom: '16px' }}>
+            <CardBody>
+              <Split hasGutter>
+                <SplitItem>
+                  <Switch
+                    id="sync-toggle"
+                    label={data?.reservationSyncEnabled ? 'Reservation Sync ON' : 'Reservation Sync OFF'}
+                    isChecked={data?.reservationSyncEnabled || false}
+                    onChange={(_e, checked) => handleToggleSync(checked)}
+                  />
+                </SplitItem>
+                <SplitItem>
+                  <Button variant="secondary" icon={<DownloadIcon />} onClick={() => adminExportDatabase()}>
+                    Export DB
+                  </Button>
+                </SplitItem>
+                <SplitItem>
+                  <FileUpload
+                    id="import-file"
+                    type="dataURL"
+                    filename={importFilename}
+                    onFileInputChange={(_e, file) => {
+                      setImportFile(file);
+                      setImportFilename(file.name);
+                    }}
+                    onClearClick={() => { setImportFile(null); setImportFilename(''); }}
+                    browseButtonText="Choose DB"
+                    style={{ maxWidth: '300px' }}
+                  />
+                </SplitItem>
+                {importFile && (
+                  <SplitItem>
+                    <Button variant="primary" icon={<UploadIcon />} onClick={handleImport}>
+                      Import
+                    </Button>
+                  </SplitItem>
+                )}
+                <SplitItem isFilled />
+                <SplitItem>
+                  <Button variant="danger" icon={<TrashIcon />} onClick={() => setShowDeleteAll(true)}>
+                    Delete All
+                  </Button>
+                </SplitItem>
+              </Split>
+            </CardBody>
+          </Card>
+
+          {/* Toolbar */}
+          <Toolbar>
+            <ToolbarContent>
+              <ToolbarItem>
+                <TextInput
+                  type="search"
+                  aria-label="Filter bookings"
+                  placeholder="Filter by user, date, resource..."
+                  value={filter}
+                  onChange={(_e, val) => setFilter(val)}
+                  style={{ minWidth: '300px' }}
+                />
+              </ToolbarItem>
+              <ToolbarItem>
+                <Button variant="plain" onClick={() => { setLoading(true); fetchData(); }} icon={<SyncIcon />}>
+                  Refresh
+                </Button>
+              </ToolbarItem>
+              <ToolbarItem>
+                <span style={{ fontSize: '14px', color: 'var(--pf-t--global--text--color--regular)', opacity: 0.7 }}>
+                  {sorted.length} of {bookings.length} bookings
+                </span>
+              </ToolbarItem>
+            </ToolbarContent>
+          </Toolbar>
+
+          {/* Bookings table */}
+          <Table aria-label="Admin bookings table" variant="compact">
+            <Thead>
+              <Tr>
+                <Th sort={getSortParams('id')}>ID</Th>
+                <Th sort={getSortParams('user')}>User</Th>
+                <Th sort={getSortParams('resource')}>Resource</Th>
+                <Th sort={getSortParams('slotIndex')}>Slot</Th>
+                <Th sort={getSortParams('date')}>Date</Th>
+                <Th sort={getSortParams('source')}>Source</Th>
+                <Th sort={getSortParams('createdAt')}>Created</Th>
+                <Th>Actions</Th>
+              </Tr>
+            </Thead>
+            <Tbody>
+              {sorted.map((b) => (
+                <Tr key={b.id}>
+                  <Td style={{ fontSize: '12px', maxWidth: '150px', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {b.id}
+                  </Td>
+                  <Td>{b.user}</Td>
+                  <Td style={{ fontSize: '12px' }}>{b.resource}</Td>
+                  <Td>{b.slotIndex}</Td>
+                  <Td>{b.date}</Td>
+                  <Td>
+                    <Label color={b.source === 'consumed' ? 'green' : 'red'} isCompact>
+                      {b.source}
+                    </Label>
+                  </Td>
+                  <Td style={{ fontSize: '12px' }}>{b.createdAt}</Td>
+                  <Td>
+                    {confirmDeleteId === b.id ? (
+                      <Split hasGutter>
+                        <SplitItem>
+                          <Button variant="danger" size="sm" onClick={() => handleDelete(b.id)}>
+                            Confirm
+                          </Button>
+                        </SplitItem>
+                        <SplitItem>
+                          <Button variant="secondary" size="sm" onClick={() => setConfirmDeleteId(null)}>
+                            Cancel
+                          </Button>
+                        </SplitItem>
+                      </Split>
+                    ) : (
+                      <Button variant="link" isDanger size="sm" onClick={() => setConfirmDeleteId(b.id)}>
+                        Delete
+                      </Button>
+                    )}
+                  </Td>
+                </Tr>
+              ))}
+            </Tbody>
+          </Table>
+        </PageSection>
+
+        {/* Delete All confirmation modal */}
+        <Modal
+          variant={ModalVariant.small}
+          isOpen={showDeleteAll}
+          onClose={() => setShowDeleteAll(false)}
+        >
+          <ModalHeader title="Delete All Bookings" />
+          <ModalBody>
+            Are you sure you want to delete all bookings? This action cannot be undone.
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="danger" onClick={handleDeleteAll}>
+              Delete All
+            </Button>
+            <Button variant="link" onClick={() => setShowDeleteAll(false)}>
+              Cancel
+            </Button>
+          </ModalFooter>
+        </Modal>
+      </>
+    </>
+  );
+};
+
+export default AdminPage;
