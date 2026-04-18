@@ -1,142 +1,191 @@
-# GPU Booking App
+# GPU Booking Console Plugin
 
-A web application for booking and managing shared GPU resources on OpenShift clusters with [Kueue](https://kueue.sigs.k8s.io/) integration. Users reserve GPU time slots through an interactive calendar interface, and the system automatically manages Kueue ClusterQueue quotas to enforce reservation priority via workload preemption.
+An OpenShift Console Dynamic Plugin for booking and managing shared GPU resources with [Kueue](https://kueue.sigs.k8s.io/) integration. Users reserve GPU time slots through an interactive calendar interface embedded directly in the OpenShift console, and the system automatically manages Kueue ClusterQueue quotas to enforce reservation priority via workload preemption.
 
 ## Features
 
+- **OpenShift Console integration** - runs as a dynamic plugin inside the OpenShift web console (admin perspective)
 - **Interactive calendar** with day/multi-day/hour-range bookings, Ctrl+click multi-select, Shift+click ranges, and right-click context menu
 - **GPU resource types** - full H200 GPUs and MIG partitions (3g.71gb, 2g.35gb, 1g.18gb)
 - **Kueue integration** - automatically syncs LocalQueue GPU usage as "consumed" bookings; user reservations take priority and trigger workload preemption
 - **Reservation system** - creates per-user ClusterQueues with protected `nominalQuota`, ensuring reserved workloads cannot be preempted by unreserved ones
-- **Admin dashboard** - sortable/filterable bookings table, per-resource summary tiles, runtime reservation sync toggle, bulk delete
-- **OpenShift OAuth** - authentication via OAuth proxy sidecar container
+- **Admin dashboard** - sortable/filterable bookings table, runtime reservation sync toggle, database export/import
+- **Built-in help** - 8-page markdown documentation with sidebar navigation
+- **OpenShift auth** - authentication via console `UserToken` proxy and Kubernetes TokenReview/SubjectAccessReview
 
 ## Architecture
 
 ```
-+-----------------+     +------------------+     +------------------+
-|  Next.js Client | --> |   Go Backend     | --> |   SQLite DB      |
-|  (port 3000)    |     |   (port 8080)    |     |   (/data/)       |
-+-----------------+     +------------------+     +------------------+
-        ^                       |
-        |                       v
-+------------------+    +------------------+
-|  OAuth Proxy     |    |  Kueue API       |
-|  (port 4180)     |    |  (LocalQueues)   |
-+------------------+    +------------------+
+┌──────────────────────────────────────────────────────────────┐
+│ OpenShift Console                                            │
+│                                                              │
+│  ┌────────────────────────────────────────────────┐          │
+│  │ GPU Booking Plugin (React / PatternFly v6)     │          │
+│  │  BookingPage  │  AdminPage  │  HelpPage        │          │
+│  └───────┬────────────────────────────────────────┘          │
+│          │ /api/proxy/plugin/gpu-booking-plugin/backend/api  │
+│          │ (Bearer token injected by console)                │
+│  ┌───────▼────────────────────────────────────────┐          │
+│  │ Console Proxy (UserToken)                      │          │
+│  └───────┬────────────────────────────────────────┘          │
+└──────────┼───────────────────────────────────────────────────┘
+           │
+  ┌────────▼─────────────────────────────────────────────┐
+  │ GPU Booking Pod (:9443 TLS)                          │
+  │                                                      │
+  │  Go Backend                                          │
+  │  ├── Auth (TokenReview + SubjectAccessReview)        │
+  │  ├── Booking API (CRUD, bulk, conflict resolution)   │
+  │  ├── Admin API (list, delete, export/import DB)      │
+  │  ├── Kueue Sync (30s - consumed bookings)            │
+  │  ├── Reservation Sync (10m - K8s resources)          │
+  │  └── Static Assets (plugin dist/)                    │
+  │                                                      │
+  │  SQLite DB (/app/data/bookings.db)                   │
+  └──────────────────────────────────────────────────────┘
+           │
+  ┌────────▼─────────────────────────────────────────────┐
+  │ Kueue API (ClusterQueues, LocalQueues, Cohorts)      │
+  │ HardwareProfiles (infrastructure.opendatahub.io)     │
+  └──────────────────────────────────────────────────────┘
 ```
 
-All three application containers run in a single pod. The OAuth proxy handles authentication, the Next.js client serves the UI (using server actions to call the backend), and the Go backend manages bookings and Kueue synchronisation.
+The plugin runs as a single pod with one container. The Go backend serves both the plugin's static assets (loaded by the OpenShift console) and the REST API. Authentication is handled by the console's `UserToken` proxy, which forwards the logged-in user's Bearer token to the backend.
+
+For the full architecture details, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Getting Started
 
 ### Prerequisites
 
-- Go 1.22+
-- Node.js 20+
+- Go 1.25+
+- Node.js 22+
+- yarn
 - SQLite development libraries (`sqlite-devel` or `sqlite-libs`)
+- An OpenShift 4.x cluster with Kueue installed
 
 ### Local Development
 
 ```bash
-# Start the backend
-cd server
-ADMIN_PASSWORD=changeme DEV_USER=testuser KUEUE_SYNC_ENABLED=false go run .
+# Install frontend dependencies
+yarn install
 
-# Start the frontend (in another terminal)
-cd client
-npm install
-npm run dev
+# Start the backend (with Kueue sync disabled for local dev)
+cd cmd/plugin
+KUEUE_SYNC_ENABLED=false DB_PATH=./bookings.db go run .
+
+# Start the frontend dev server (in another terminal)
+yarn dev
 ```
 
-The backend runs on `:8080` and the frontend on `:3000`. Set `DEV_USER` to bypass the OAuth proxy user header for local development.
+The backend runs on `:9443` and the webpack dev server on `:9001` (proxying API calls to the backend).
 
 ### Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PORT` | `8080` | Server port |
-| `DB_PATH` | `./bookings.db` | SQLite database path |
-| `ADMIN_PASSWORD` | - | Admin login password (required) |
+| `PORT` | `9443` | Server port |
+| `DB_PATH` | `/app/data/bookings.db` | SQLite database path |
+| `PLUGIN_DIST_DIR` | `/app/dist` | Path to frontend static assets |
 | `BOOKING_WINDOW_DAYS` | `30` | How far ahead users can book |
-| `DEV_USER` | - | Override user identity for local dev |
 | `KUEUE_SYNC_ENABLED` | `true` | Enable LocalQueue watcher |
-| `KUEUE_SYNC_INTERVAL` | `60` | Kueue poll interval in seconds |
-| `KUEUE_BOOKING_DAYS` | `0` | Days to book ahead for consumed slots (0 = rest of week) |
+| `KUEUE_SYNC_INTERVAL` | `30` | Kueue poll interval in seconds |
+| `KUEUE_BOOKING_DAYS` | `7` | Days to book ahead for consumed slots |
 
 ## Deployment
 
-### Build Container Images
+### Build and Push
 
 ```bash
-# Build server and client images
-make podman-build
-
-# Push to your registry
+# Build and push the container image
 make podman-push
+
+# Or build without pushing
+make podman-build
 ```
 
-Update the image repositories in `chart/values.yaml` to point to your own container registry.
+The default image is `quay.io/eformat/gpu-booking-plugin:latest`. Override with:
+
+```bash
+make podman-push REGISTRY=my-registry.example.com REPOSITORY=my-registry.example.com/my-org/gpu-booking-plugin
+```
 
 ### Deploy with Helm
 
 ```bash
-helm install gpu-booking chart/ \
-  --set server.adminPassword=changeme \
-  --set oauth.cookieSecret=$(openssl rand -base64 32) \
-  --set route.host=gpu-booking.apps.example.com
+helm install gpu-booking-plugin chart/ \
+  -n gpu-booking-app-plugin --create-namespace
 ```
+
+This creates:
+- **Deployment** - single-replica pod with TLS via service-serving certificates
+- **ConsolePlugin** CR - registers the plugin with OpenShift console
+- **Service** - ClusterIP on port 9443
+- **PVC** - 2Gi for SQLite database persistence
+- **ServiceAccount + ClusterRole** - RBAC for Kueue, auth, and HardwareProfile APIs
+- **Console patch** - enables the plugin in the OpenShift console
 
 #### Key Helm Values
 
 | Value | Default | Description |
 |-------|---------|-------------|
-| `server.adminPassword` | - | Admin login password (required) |
-| `server.bookingWindowDays` | `30` | Booking window in days |
-| `server.storage.size` | `1Gi` | PVC size for SQLite |
-| `server.storage.storageClassName` | - | Optional storage class |
-| `server.kueueSync.enabled` | `false` | Enable Kueue LocalQueue sync |
-| `server.kueueSync.interval` | `60` | Kueue sync interval in seconds |
-| `server.kueueSync.bookingDays` | `0` | Days ahead for consumed bookings |
-| `oauth.cookieSecret` | - | OAuth proxy cookie secret (required) |
-| `route.host` | - | OpenShift Route hostname |
+| `image.repository` | `quay.io/eformat/gpu-booking-plugin` | Container image |
+| `image.tag` | `latest` | Image tag |
+| `replicas` | `1` | Pod replicas |
+| `persistence.size` | `2Gi` | PVC size for SQLite |
+| `tls.enabled` | `true` | Enable TLS via service-serving certs |
+| `kueueSync.enabled` | `true` | Enable Kueue LocalQueue sync |
+| `kueueSync.interval` | `30` | Kueue sync interval in seconds |
+| `kueueSync.bookingDays` | `7` | Days ahead for consumed bookings |
+| `bookingWindowDays` | `30` | Booking window in days |
 
 ### Kueue Reservation System
 
-When Kueue sync is enabled, the app:
+When Kueue sync is enabled, the plugin:
 
 1. Polls all LocalQueues for GPU usage and creates "consumed" bookings
 2. When users reserve slots, consumed bookings are evicted and per-user ClusterQueues are created with protected quotas
 3. Kueue's `reclaimWithinCohort` preemption ensures reserved workloads take priority over unreserved ones
+4. HardwareProfiles are created in user namespaces for OpenDataHub/RHOAI workbench scheduling
 
-See the [Handling Reservations](CLAUDE.md#handling-reservations) section in CLAUDE.md for the full quota flow and preemption model.
-
-#### Testing Reservations with Helm
-
-```bash
-# No reservations (default)
-helm template rbac applications/rbac/ -s templates/reservations.yaml
-
-# Single user reservation
-EOD=$(date -d "23:59:59" +%s)
-helm template rbac applications/rbac/ -s templates/reservations.yaml \
-    --set-json='reservations={"h200": {"userA": {"nvidia.com/mig-2g.35gb": 1, "until": '$EOD'}}}'
-```
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full quota flow, preemption model, and sync lifecycle.
 
 ## API Endpoints
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/config` | Public GPU resource configuration |
-| `GET` | `/api/bookings` | List all bookings |
-| `POST` | `/api/bookings` | Create a booking |
-| `POST` | `/api/bookings/bulk` | Bulk create bookings |
-| `DELETE` | `/api/bookings?id=<id>` | Cancel a booking (owner or admin) |
-| `POST` | `/api/admin/login` | Admin authentication |
-| `GET` | `/api/admin` | Admin bookings + config |
-| `DELETE` | `/api/admin?id=<id>` | Admin delete booking |
-| `DELETE` | `/api/admin` | Admin delete all bookings |
-| `POST` | `/api/admin/reservations` | Toggle reservation sync |
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `GET` | `/api/auth/me` | user | Current user info (username, groups, is_admin) |
+| `GET` | `/api/config` | user | GPU resource specs, booking window, cluster capacity |
+| `GET` | `/api/bookings` | user | List all bookings + active reservations |
+| `POST` | `/api/bookings` | user | Create a booking |
+| `POST` | `/api/bookings/bulk` | user | Bulk create bookings (multi-day) |
+| `DELETE` | `/api/bookings?id=<id>` | user | Cancel own booking |
+| `GET` | `/api/admin` | admin | All bookings (admin only) |
+| `DELETE` | `/api/admin?id=<id>` | admin | Delete any booking |
+| `POST` | `/api/admin/reservations` | admin | Toggle reservation sync |
+| `GET` | `/api/admin/database/export` | admin | Download database as JSON |
+| `POST` | `/api/admin/database/import` | admin | Restore database from JSON |
+| `GET` | `/api/health` | none | Health check |
+
+## Project Structure
+
+```
+gpu-booking-app-plugin/
+├── cmd/plugin/             # Go entry point
+├── pkg/
+│   ├── api/                # HTTP handlers (auth, bookings, admin, config)
+│   ├── database/           # SQLite schema and queries
+│   └── kube/               # Kueue sync + reservation management
+├── src/
+│   ├── components/         # React components (BookingPage, AdminPage, HelpPage, etc.)
+│   ├── utils/              # AuthContext, API helpers
+│   └── docs/               # Help markdown files, images, topic registry
+├── chart/                  # Helm chart (deployment, ConsolePlugin, RBAC, PVC)
+├── console-extensions.json # Plugin routes and navigation
+├── webpack.config.ts       # Frontend build config
+├── Containerfile           # Multi-stage build (Node.js + Go + UBI minimal)
+└── ARCHITECTURE.md         # Detailed architecture documentation
+```
 
 ## License
 

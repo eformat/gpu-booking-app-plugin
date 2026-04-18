@@ -1,37 +1,176 @@
-# GPU Booking App Architecture
+# GPU Booking Console Plugin Architecture
 
-This document describes the Kueue-based GPU reservation architecture, covering how ClusterQueues, LocalQueues, and HardwareProfiles work together to manage GPU quota allocation, preemption, and booking synchronization.
+This document describes the architecture of the GPU Booking OpenShift Console Dynamic Plugin, covering the frontend integration, Go backend, Kueue-based reservation system, and deployment model.
 
 ## System Overview
 
-The GPU Booking App manages H200 GPU resources with MIG (Multi-Instance GPU) partitioning. It combines a user-facing booking system with automatic Kueue workload tracking to provide a unified view of GPU allocation.
+The GPU Booking Console Plugin is an OpenShift Console Dynamic Plugin that manages H200 GPU resources with MIG (Multi-Instance GPU) partitioning. It runs as a single pod serving both a React frontend (loaded into the OpenShift console) and a Go API backend. The system combines user-facing reservations with automatic Kueue workload tracking to provide a unified view of GPU allocation.
 
 **Key components:**
-- **Booking App** (Go backend + Next.js frontend) - user-facing reservation system
+- **Console Plugin** (React/PatternFly v6 frontend) - loaded into OpenShift console via `ConsolePlugin` CR
+- **Go Backend** (API server on port 9443) - booking API, Kueue sync, reservation management
 - **Kueue** - Kubernetes-native job queueing with quota management
-- **SQLite** - persistent booking storage
-- **OpenShift OAuth Proxy** - authentication via OpenShift SSO
+- **SQLite** - persistent booking storage (WAL mode)
+- **OpenShift Console Proxy** - authentication via `UserToken` proxy type
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ OpenShift Console                                               │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────┐           │
+│  │ GPU Booking Plugin (React/PF6)                   │           │
+│  │  BookingPage | AdminPage | HelpPage              │           │
+│  └──────────┬───────────────────────────────────────┘           │
+│             │ /api/proxy/plugin/gpu-booking-plugin/backend/api  │
+│             │ (Bearer token injected by console)                │
+│  ┌──────────▼───────────────────────────────────────┐           │
+│  │ Console Proxy (UserToken)                        │           │
+│  └──────────┬───────────────────────────────────────┘           │
+└─────────────┼───────────────────────────────────────────────────┘
+              │
+   ┌──────────▼──────────────────────────────────────────────┐
+   │ GPU Booking Pod (:9443 TLS)                             │
+   │                                                         │
+   │  Go Backend                                             │
+   │  ├── Auth Middleware (TokenReview + SubjectAccessReview) │
+   │  ├── Booking API (CRUD, bulk, conflict resolution)      │
+   │  ├── Admin API (list, delete, export/import DB)         │
+   │  ├── Kueue Sync Loop (30s - consumed bookings)          │
+   │  ├── Reservation Sync Loop (10m - K8s resources)        │
+   │  ├── Expiry Cleaner (10m - stale ClusterQueues)         │
+   │  └── Static Asset Server (plugin dist/)                 │
+   │                                                         │
+   │  SQLite DB (/app/data/bookings.db)                      │
+   └─────────────────────────────────────────────────────────┘
+```
+
+## Frontend Architecture
+
+The frontend is a React application using PatternFly v6 components, bundled via webpack and loaded into the OpenShift console as a dynamic plugin.
+
+### Console Integration
+
+**Plugin registration** (`console-extensions.json`):
+
+| Extension Type | Details |
+|---------------|---------|
+| `console.navigation/section` | "GPU Booking" nav section in admin perspective |
+| `console.page/route` `/gpu-booking/bookings` | Main booking page |
+| `console.page/route` `/gpu-booking/admin` | Admin dashboard |
+| `console.page/route` `/gpu-booking/help/:topic?` | Help documentation |
+| `console.navigation/href` | Nav links: Bookings, Administration, Help |
+
+**Exposed modules** (`package.json`):
+- `BookingPage` - main booking interface
+- `AdminPage` - admin dashboard
+- `HelpPage` - help documentation
+
+### Components
+
+| Component | Purpose |
+|-----------|---------|
+| `BookingPage.tsx` | Main page: calendar + resource selector + booking grid + usage panel. Supports multi-select dates (Ctrl/Shift click), "My Bookings" filter, and bulk booking modal |
+| `BookingGrid.tsx` | Per-resource slot grid showing reserved/consumed/available units with Reserve/Cancel/Edit/Override buttons |
+| `BookingModal.tsx` | Modal for multi-day GPU reservations with date range, time range, and resource quantity selectors |
+| `CalendarGrid.tsx` | Interactive month calendar with booking density indicators and date multi-select |
+| `ResourceSelector.tsx` | Card gallery for GPU resource type selection (H200, MIG 3g, 2g, 1g) with GPU equivalent weights |
+| `GpuUsagePanel.tsx` | Real-time usage bar chart showing consumed/reserved/free slots per resource type with hover-to-reveal usernames |
+| `AdminPage.tsx` | Admin: view all bookings, delete bookings, toggle Kueue sync, export/import database |
+| `HelpPage.tsx` | Markdown-based help with sidebar navigation, 8 topic pages, prev/next pagination |
+
+### Authentication Context
+
+`AuthContext.tsx` provides user identity to all components:
+1. Calls `GET /api/auth/me` with the console-injected Bearer token
+2. Returns `{ username, groups, is_admin }`
+3. Cached for 30 seconds client-side to pick up auth changes
+4. Admin status drives visibility of admin panel and override buttons
+
+### Routing
+
+Uses React Router v5 (`useHistory`, `useLocation`) provided by the OpenShift console SDK. Route params are extracted from `window.location.pathname` via `useLocation` rather than `useParams`, as the console SDK routing does not reliably trigger re-renders with `useParams`.
+
+## Backend Architecture
+
+The Go backend serves the plugin's static assets and REST API on port 9443 with TLS (via OpenShift service-serving certificates).
+
+### Project Structure
+
+```
+cmd/
+└── plugin/main.go          # Entry point, server setup, TLS config
+
+pkg/
+├── api/
+│   ├── main.go             # HTTP router, static file serving, middleware
+│   ├── auth.go             # TokenReview + SubjectAccessReview, 60s cache
+│   ├── bookings.go         # GET/POST/DELETE bookings, bulk booking
+│   ├── admin.go            # Admin list, delete, DB export/import
+│   ├── config.go           # GPU specs, booking window, cluster capacity
+│   └── helpers.go          # JSON response helpers
+├── database/
+│   └── database.go         # SQLite schema, CRUD operations, WAL mode
+└── kube/
+    ├── kueue.go            # Kueue LocalQueue sync → consumed bookings
+    └── reservations.go     # K8s resource sync (CQ/LQ/HardwareProfile)
+```
+
+### Authentication Flow
+
+The console's `UserToken` proxy forwards the logged-in user's Bearer token to the backend. The auth middleware:
+
+1. Extracts the Bearer token from the `Authorization` header
+2. Validates via Kubernetes `TokenReview` API → extracts `username` and `groups`
+3. Checks admin status via `SubjectAccessReview` for `gpubooking.openshift.io/bookings` with verb `admin`
+4. Caches results for 60 seconds keyed by SHA256 token hash
+5. Injects `username`, `groups`, and `is_admin` into the request context
+
+**Important:** Console impersonation does NOT affect plugin proxy calls. The `UserToken` proxy always sends the logged-in user's actual token. Impersonation headers (`Impersonate-User`) are only forwarded for direct Kubernetes API calls.
+
+### API Routes
+
+```
+GET    /api/auth/me                  → current user info (username, groups, is_admin)
+GET    /api/config                   → GPU specs, booking window, cluster capacity
+GET    /api/bookings                 → all bookings + active reservations + current user
+POST   /api/bookings                 → create single booking (conflict resolution)
+DELETE /api/bookings?id=             → cancel booking (owner or admin only)
+POST   /api/bookings/bulk            → create multi-day bookings (date range + resource counts)
+GET    /api/admin                    → all bookings (admin only)
+DELETE /api/admin?id=                → delete booking (admin only)
+POST   /api/admin/reservations       → toggle Kueue sync (admin only)
+GET    /api/admin/database/export    → download database JSON (admin only)
+POST   /api/admin/database/import    → restore database (admin only)
+GET    /api/health                   → health check + namespace
+```
+
+### Username Sanitization
+
+The console plugin receives full email addresses from `TokenReview` (e.g. `mhepburn@redhat.com`), whereas the original standalone app received short usernames from OAuth proxy `X-Forwarded-User`. Kubernetes resource names must be valid RFC 1123 DNS labels, so:
+
+- `@` and domain are stripped: `mhepburn@redhat.com` → `mhepburn`
+- Invalid characters replaced with `-`
+- Result trimmed of leading/trailing `-` and `.`
+- Truncated to 253 characters
+
+This ensures `user-mhepburn` namespaces and ClusterQueues match the existing convention.
 
 ## GPU Resource Pool
 
 The system manages a single H200 node with the following GPU resources:
 
-| Resource | Count | CPU Share | CPU per Unit | Memory per Unit |
-|----------|-------|-----------|-------------|-----------------|
-| `nvidia.com/gpu` (Full H200) | 8 | 6.25% | 19 cores | 216 Gi |
-| `nvidia.com/mig-3g.71gb` | 8 | 3.125% | 9 cores | 108 Gi |
-| `nvidia.com/mig-2g.35gb` | 8 | 1.5625% | 4 cores | 54 Gi |
-| `nvidia.com/mig-1g.18gb` | 16 | 0.78125% | 2 cores | 27 Gi |
+| Resource | Count | GPU Equivalent | CPU Share | CPU per Unit | Memory per Unit |
+|----------|-------|---------------|-----------|-------------|-----------------|
+| `nvidia.com/gpu` (Full H200) | 8 | 1.0 | 6.25% | 19 cores | 216 Gi |
+| `nvidia.com/mig-3g.71gb` | 8 | 0.5 | 3.125% | 9 cores | 108 Gi |
+| `nvidia.com/mig-2g.35gb` | 8 | 0.25 | 1.5625% | 4 cores | 54 Gi |
+| `nvidia.com/mig-1g.18gb` | 16 | 0.125 | 0.78125% | 2 cores | 27 Gi |
 
-**Total pool:** 316 CPU cores, 3460 Gi memory.
-
-Each GPU resource type has a `share` value representing the fraction of total CPU/memory one unit consumes. When a user reserves N units: `cpu = floor(N * share * 316)`, `memory = floor(N * share * 3460)`.
+**Total pool:** 316 CPU cores, 3460 Gi memory, 16 GPU equivalents.
 
 ## Kueue Resource Hierarchy
 
 All Kueue resources share a single flat Cohort. User reservations carve out protected quota from the shared pool.
-
-![Kueue Resource Hierarchy](images/kueue-resource-hierarchy.png)
 
 ### Resource Relationships
 
@@ -41,7 +180,7 @@ When a user has an active reservation, three Kubernetes resources are created:
 
 2. **LocalQueue** (`reserved`) - lives in the `user-<username>` namespace and points to the user's ClusterQueue. This is the queue users submit workloads to.
 
-3. **HardwareProfile(s)** - one per GPU resource type reserved (e.g. `reserved-gpu`, `reserved-mig-35gb`). Lives in the user's namespace and references the `reserved` LocalQueue. Provides the scheduling interface for OpenDataHub/RHOAI workbenches.
+3. **HardwareProfile(s)** - one per GPU resource type reserved (e.g. `reserved-gpu`, `reserved-mig-35gb`). Lives in the user's namespace and references the `reserved` LocalQueue. Uses API group `infrastructure.opendatahub.io`. Provides the scheduling interface for OpenDataHub/RHOAI workbenches.
 
 ### Quota Flow
 
@@ -63,10 +202,6 @@ Remaining = Cohort nominalQuota (shared pool)
 
 The preemption design ensures user reservations are pre-eminent over unreserved workloads.
 
-![Preemption Model](images/preemption-model.png)
-
-### Preemption Policy Summary
-
 | Queue Type | `reclaimWithinCohort` | `borrowWithinCohort` | Effect |
 |---|---|---|---|
 | `user-<name>` | `Any` | `Never` | Can reclaim quota from borrowing workloads; cannot borrow beyond reservation |
@@ -82,10 +217,6 @@ The preemption design ensures user reservations are pre-eminent over unreserved 
 ## Consumed vs Reserved Bookings
 
 The system tracks two types of bookings that interact through a priority-based conflict resolution model.
-
-![Consumed vs Reserved Booking Flow](images/consumed-vs-reserved-booking-flow.png)
-
-### Booking Comparison
 
 | Property | Reserved | Consumed |
 |----------|----------|----------|
@@ -107,11 +238,9 @@ The system tracks two types of bookings that interact through a priority-based c
 
 Three independent sync loops run concurrently in the Go backend.
 
-![Sync Lifecycle](images/sync-lifecycle.png)
+### 1. Kueue Sync Loop (every 30s)
 
-### 1. Kueue Sync Loop (every 60s)
-
-**File:** `server/kueue.go`
+**File:** `pkg/kube/kueue.go`
 **Controlled by:** `KUEUE_SYNC_ENABLED`, `KUEUE_SYNC_INTERVAL`
 
 Polls all LocalQueues in the cluster and creates `consumed` bookings reflecting actual GPU usage:
@@ -122,13 +251,13 @@ Polls all LocalQueues in the cluster and creates `consumed` bookings reflecting 
 - Aggregates across multiple LocalQueues in the same namespace (e.g. `default`, `unreserved`, `unreserved-priority`)
 - Assigns globally unique slot indices per resource to avoid UNIQUE constraint collisions
 - Resolves namespace `rhai-tmm.dev/owner` label as booking owner (falls back to namespace name)
-- Books from today through the rest of the week (or `KUEUE_BOOKING_DAYS` days ahead)
+- Books from today through `KUEUE_BOOKING_DAYS` days ahead
 - Reconciles: adds missing bookings, removes stale future bookings, skips slots already reserved
 - Historical bookings (past dates) are preserved
 
 ### 2. Reservation Sync Loop (every 10min)
 
-**File:** `server/reservations.go`
+**File:** `pkg/kube/reservations.go`
 **Controlled by:** Runtime toggle via `POST /api/admin/reservations`
 
 Materializes Kueue resources (ClusterQueue, LocalQueue, HardwareProfile) for today's reserved bookings:
@@ -142,7 +271,7 @@ Materializes Kueue resources (ClusterQueue, LocalQueue, HardwareProfile) for tod
 
 ### 3. Expiration Cleaner (every 10min)
 
-**File:** `server/reservations.go`
+**File:** `pkg/kube/reservations.go`
 
 Cleans up expired Kueue resources:
 
@@ -163,29 +292,82 @@ In addition to the periodic loops, reservation sync is triggered asynchronously 
 
 ## Deployment Architecture
 
-The application deploys as a single Kubernetes pod with three containers:
+The application deploys as a single Kubernetes pod with one container, managed by a Helm chart in `chart/`.
+
+### Container Build (Multi-stage)
 
 ```
-Pod
-├── client (Next.js :3000) - frontend UI
-├── server (Go :8080) - booking API + Kueue sync
-└── oauth-proxy (OpenShift :4180) - SSO authentication
+Stage 1: frontend-builder (UBI9 Node.js 22)
+  └── yarn build → dist/ (webpack + ConsoleRemotePlugin)
+
+Stage 2: backend-builder (UBI9 Go 1.25)
+  └── CGO_ENABLED=1 go build → /backend (SQLite requires CGO)
+
+Stage 3: final (UBI9 ubi-minimal)
+  ├── /app/backend (Go binary)
+  ├── /app/dist/ (plugin static assets)
+  ├── /app/data/bookings.db (SQLite, PVC-backed)
+  └── Port 9443 (TLS via service-serving certs)
 ```
 
-- **PVC** mounted at `/data` for SQLite storage (`bookings.db`)
-- **ServiceAccount** with OAuth redirect annotation for OpenShift SSO
-- **ClusterRole** RBAC for reading/writing `localqueues`, `clusterqueues`, `cohorts`, `namespaces`, and `hardwareprofiles`
-- **Route** with edge TLS termination through the OAuth proxy
-- User identity flows via `X-Forwarded-User` header from the OAuth proxy
+### Kubernetes Resources
+
+| Resource | Details |
+|----------|---------|
+| **Deployment** | Single replica, non-root (UID 1001), read-only rootfs, liveness/readiness on `/api/health` |
+| **ConsolePlugin** CR | Registers plugin with OpenShift console, `UserToken` proxy type, service backend |
+| **Service** | ClusterIP on port 9443, `service.beta.openshift.io/serving-cert-secret-name` annotation |
+| **PVC** | 2Gi for SQLite database persistence |
+| **ServiceAccount** | With RBAC for Kueue, namespace, auth, and HardwareProfile APIs |
+| **ClusterRole** | `localqueues`, `clusterqueues`, `cohorts` (Kueue); `namespaces`, `tokenreviews`, `subjectaccessreviews` (K8s); `hardwareprofiles` (OpenDataHub) |
+| **Console Patch** | Enables plugin in the `Console` operator config |
+
+### RBAC
+
+The plugin's ServiceAccount requires:
+
+| API Group | Resources | Verbs |
+|-----------|-----------|-------|
+| `kueue.x-k8s.io` | `localqueues`, `clusterqueues`, `cohorts` | get, list, watch, create, update, patch, delete |
+| `""` (core) | `namespaces` | get, list, watch, create |
+| `authentication.k8s.io` | `tokenreviews` | create |
+| `authorization.k8s.io` | `subjectaccessreviews` | create |
+| `infrastructure.opendatahub.io` | `hardwareprofiles` | get, list, watch, create, update, patch, delete |
+
+Admin access for users is controlled by a separate ClusterRole that grants the `admin` verb on `gpubooking.openshift.io/bookings`. This custom RBAC rule is checked via SubjectAccessReview and is not included in the standard OpenShift `admin` ClusterRole, so project owners do not automatically get booking admin access.
+
+## Help System
+
+The plugin includes a built-in help system with 8 markdown documentation pages:
+
+| Topic | Slug |
+|-------|------|
+| Getting Started | `getting-started` |
+| Calendar & Navigation | `calendar` |
+| Making Bookings | `making-bookings` |
+| GPU Resources | `gpu-resources` |
+| Kueue & Auto-Bookings | `kueue` |
+| Admin Dashboard | `admin` |
+| Slots & Conflicts | `slots-and-conflicts` |
+| FAQ | `faq` |
+
+Markdown files are imported as strings via webpack `asset/source` rule and rendered at runtime with `react-markdown`, `remark-gfm`, and `rehype-raw`. Images are imported as webpack assets and resolved via an `imageMap` registry.
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `server/main.go` | Booking API endpoints, conflict resolution |
-| `server/kueue.go` | Kueue LocalQueue sync daemon |
-| `server/reservations.go` | K8s resource sync (ClusterQueue/LocalQueue/HardwareProfile) |
-| `applications/rbac/templates/reservations.yaml` | Helm template for declarative reservation resources |
-| `applications/rbac/templates/kueue/_helpers.tpl` | Helm helpers for quota calculation |
-| `applications/rbac/values.yaml` | Total resource pool, reservation config, flavors |
-| `chart/` | Application Helm chart (deployment, PVC, RBAC, route) |
+| `cmd/plugin/main.go` | Entry point, TLS setup, server startup |
+| `pkg/api/main.go` | HTTP router, static assets, middleware chain |
+| `pkg/api/auth.go` | TokenReview + SubjectAccessReview auth |
+| `pkg/api/bookings.go` | Booking CRUD, conflict resolution, bulk booking |
+| `pkg/database/database.go` | SQLite schema, queries, WAL mode |
+| `pkg/kube/kueue.go` | Kueue LocalQueue sync → consumed bookings |
+| `pkg/kube/reservations.go` | K8s resource sync (CQ/LQ/HardwareProfile), username sanitization |
+| `src/components/BookingPage.tsx` | Main booking UI |
+| `src/components/BookingGrid.tsx` | Per-resource slot grid |
+| `src/components/HelpPage.tsx` | Help documentation viewer |
+| `src/utils/AuthContext.tsx` | Auth state management with 30s TTL cache |
+| `src/docs/topicRegistry.ts` | Help topic definitions and navigation structure |
+| `console-extensions.json` | Plugin routes and navigation registration |
+| `chart/` | Helm chart (deployment, ConsolePlugin CR, RBAC, PVC, service) |
