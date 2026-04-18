@@ -26,6 +26,7 @@ import resourceSelector from './images/resource-selector.png';
 import myBookingsCancelAll from './images/my-bookings-cancel-all.png';
 import cancelAllConfirm from './images/cancel-all-confirm.png';
 import cancelAllFiltered from './images/cancel-all-filtered.png';
+import adminResourceFilter from './images/admin-resource-filter.png';
 import slotStates from './images/slot-states.png';
 
 const imageMap: Record<string, string> = {
@@ -57,6 +58,7 @@ const imageMap: Record<string, string> = {
   'images/my-bookings-cancel-all.png': myBookingsCancelAll,
   'images/cancel-all-confirm.png': cancelAllConfirm,
   'images/cancel-all-filtered.png': cancelAllFiltered,
+  'images/admin-resource-filter.png': adminResourceFilter,
   'images/slot-states.png': slotStates,
 };
 

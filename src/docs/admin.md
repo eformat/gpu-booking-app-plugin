@@ -33,33 +33,19 @@ The header bar shows:
 
 ---
 
-## Summary Tiles
+## Resource Filter
 
-Four resource tiles show the total number of active bookings per GPU type (H200 Full GPU, MIG 3g.71gb, MIG 2g.35gb, MIG 1g.18gb) along with the total unit count.
+The resource selector cards filter the bookings table by GPU type. All resource types are selected by default. Click a card to show only that resource type; Ctrl+click (Cmd+click on Mac) to toggle individual types on or off.
 
-Click a tile to filter the bookings table to that resource type. Click again to clear the filter.
+The booking count updates to reflect the current filter, e.g. "18 of 129 bookings".
 
-![images/admin-summary-tiles.png](images/admin-summary-tiles.png)
+![images/admin-resource-filter.png](images/admin-resource-filter.png)
 
 ---
 
-## Filters
+## Text Filter
 
-### Source Filter
-
-Filter bookings by their source:
-
-| Filter | Description |
-|--------|-------------|
-| **All** | Show all bookings (default) |
-| **Reserved** | Show only user-created reservations |
-| **Consumed** | Show only Kueue auto-bookings from active workloads |
-
-Each button shows a count of matching bookings.
-
-### Text Filter
-
-The search box in the bookings table header filters by ID, user, resource, date, email, description, or slot type. Filtering is case-insensitive and matches substrings.
+The search box in the toolbar filters by ID, user, resource, date, source, or description. Filtering is case-insensitive and matches substrings. This works in combination with the resource selector above.
 
 ---
 
