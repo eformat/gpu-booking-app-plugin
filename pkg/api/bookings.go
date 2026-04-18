@@ -198,6 +198,56 @@ func DeleteBooking(w http.ResponseWriter, r *http.Request) {
 	go kube.SyncReservations()
 }
 
+func BulkCancelHandler(w http.ResponseWriter, r *http.Request) {
+	user := GetUser(r)
+	db := database.DB()
+
+	var req struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.IDs) == 0 {
+		HttpError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+
+	var deleted []string
+	var errors []string
+	for _, id := range req.IDs {
+		var owner, source string
+		err := db.QueryRow("SELECT user, source FROM bookings WHERE id = ?", id).Scan(&owner, &source)
+		if err == sql.ErrNoRows {
+			errors = append(errors, fmt.Sprintf("%s: not_found", id))
+			continue
+		}
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("%s: database_error", id))
+			continue
+		}
+		if source == "consumed" {
+			errors = append(errors, fmt.Sprintf("%s: consumed_booking", id))
+			continue
+		}
+		if owner != user.Username && !user.IsAdmin {
+			errors = append(errors, fmt.Sprintf("%s: forbidden", id))
+			continue
+		}
+		if _, err := db.Exec("DELETE FROM bookings WHERE id = ?", id); err != nil {
+			errors = append(errors, fmt.Sprintf("%s: database_error", id))
+			continue
+		}
+		deleted = append(deleted, id)
+	}
+
+	JsonResponse(w, map[string]any{
+		"deleted": deleted,
+		"errors":  errors,
+	})
+
+	if len(deleted) > 0 {
+		go kube.SyncReservations()
+	}
+}
+
 func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 	user := GetUser(r)
 	db := database.DB()

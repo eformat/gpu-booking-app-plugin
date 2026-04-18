@@ -23,6 +23,9 @@ import overview from './images/overview.png';
 import perUnitHover from './images/per-unit-hover.png';
 import resourceSelectorDetail from './images/resource-selector-detail.png';
 import resourceSelector from './images/resource-selector.png';
+import myBookingsCancelAll from './images/my-bookings-cancel-all.png';
+import cancelAllConfirm from './images/cancel-all-confirm.png';
+import cancelAllFiltered from './images/cancel-all-filtered.png';
 import slotStates from './images/slot-states.png';
 
 const imageMap: Record<string, string> = {
@@ -51,6 +54,9 @@ const imageMap: Record<string, string> = {
   'images/per-unit-hover.png': perUnitHover,
   'images/resource-selector-detail.png': resourceSelectorDetail,
   'images/resource-selector.png': resourceSelector,
+  'images/my-bookings-cancel-all.png': myBookingsCancelAll,
+  'images/cancel-all-confirm.png': cancelAllConfirm,
+  'images/cancel-all-filtered.png': cancelAllFiltered,
   'images/slot-states.png': slotStates,
 };
 

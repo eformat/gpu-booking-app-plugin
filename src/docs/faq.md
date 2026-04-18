@@ -58,6 +58,10 @@ There are a few reasons this can happen:
 - **Not your booking** -- you can only cancel bookings you created
 - **Consumed booking** -- auto-bookings from Kueue cannot be cancelled by normal users. Use the **Override** button to replace it with your own reserved booking, or ask an administrator
 
+### How do I cancel all my bookings at once?
+
+Click **My Bookings**, then click the **Cancel All (N)** button that appears. To cancel only specific resource types, deselect the ones you want to keep from the resource selector before clicking Cancel All. See [Making Bookings](making-bookings) for details.
+
 ### Can I edit a booking?
 
 Yes. Hover over your booking in the grid and click **Edit**. The booking modal opens pre-filled with the existing booking details. After saving, the old booking is cancelled and a new one is created with the updated settings.

@@ -1,6 +1,6 @@
 # Making Bookings
 
-<span class="badge">Topics: Book GPU, Edit, Cancel, Override</span>
+<span class="badge">Topics: Book GPU, Edit, Cancel, Bulk Cancel, Override</span>
 
 ## Creating a Booking
 
@@ -73,6 +73,39 @@ You can only cancel your own reserved bookings. If you need to cancel someone el
 <div class="alert alert-warning">
   <strong>Note</strong>
   <p>You cannot cancel bookings on past dates. Historical bookings are read-only.</p>
+</div>
+
+---
+
+## Bulk Cancel (Cancel All)
+
+When you have many bookings across multiple dates and resource types, you can cancel them all at once using the **Cancel All** button.
+
+### How to use
+
+1. Click **My Bookings** in the toolbar — this shows all your reserved bookings and auto-selects the resource types you have bookings for
+
+![images/my-bookings-cancel-all.png](images/my-bookings-cancel-all.png)
+
+2. The **Cancel All (N)** button appears showing the total count of your reserved bookings across all selected resource types
+
+### Filtering by resource type
+
+If you only want to cancel bookings for specific resource types, use the **resource selector** to deselect the types you want to keep. The Cancel All count updates automatically to reflect only the selected resources.
+
+For example, if you booked both H200 Full GPU and MIG 1g.18gb but only want to cancel the MIG bookings, deselect H200 Full GPU from the resource selector.
+
+![images/cancel-all-filtered.png](images/cancel-all-filtered.png)
+
+### Confirmation
+
+Clicking **Cancel All** shows a confirmation prompt. Click **Confirm** to proceed or **No** to go back.
+
+![images/cancel-all-confirm.png](images/cancel-all-confirm.png)
+
+<div class="alert alert-info">
+  <strong>Tip</strong>
+  <p>Bulk cancel only affects your own reserved bookings. Consumed (Kueue) bookings and other users' bookings are not affected.</p>
 </div>
 
 ---

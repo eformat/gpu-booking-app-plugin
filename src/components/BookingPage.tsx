@@ -22,6 +22,7 @@ import {
   createBooking as apiCreateBooking,
   createBulkBooking,
   cancelBooking,
+  bulkCancelBookings,
 } from '../utils/api';
 import {
   FALLBACK_GPU_RESOURCES,
@@ -53,6 +54,8 @@ const BookingPage: React.FC = () => {
   const [editBooking, setEditBooking] = React.useState<Booking | null>(null);
   const [contextMenu, setContextMenu] = React.useState<{ x: number; y: number } | null>(null);
   const [showingMyBookings, setShowingMyBookings] = React.useState(false);
+  const [confirmCancelAll, setConfirmCancelAll] = React.useState(false);
+  const [cancellingAll, setCancellingAll] = React.useState(false);
 
   const now = new Date();
   const [viewYear, setViewYear] = React.useState(now.getFullYear());
@@ -201,6 +204,31 @@ const BookingPage: React.FC = () => {
     setShowingMyBookings(true);
   };
 
+  const handleCancelAll = async () => {
+    if (!currentUser) return;
+    const ids = bookings
+      .filter((b) => b.user === currentUser && b.source === 'reserved' && selectedResources.includes(b.resource))
+      .map((b) => b.id);
+    if (ids.length === 0) return;
+    setCancellingAll(true);
+    setError(null);
+    try {
+      await bulkCancelBookings(ids);
+      setConfirmCancelAll(false);
+      await fetchBookings();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to cancel bookings');
+    }
+    setCancellingAll(false);
+  };
+
+  const cancelAllCount = React.useMemo(() => {
+    if (!currentUser) return 0;
+    return bookings.filter(
+      (b) => b.user === currentUser && b.source === 'reserved' && selectedResources.includes(b.resource),
+    ).length;
+  }, [bookings, currentUser, selectedResources]);
+
   const handleContextMenu = (dateStr: string, e: React.MouseEvent) => {
     e.preventDefault();
     if (!selectedDates.includes(dateStr)) {
@@ -247,6 +275,40 @@ const BookingPage: React.FC = () => {
                     >
                       My Bookings
                     </Button>
+                  </ToolbarItem>
+                )}
+                {showingMyBookings && cancelAllCount > 0 && (
+                  <ToolbarItem>
+                    {confirmCancelAll ? (
+                      <>
+                        <span style={{ marginRight: '8px', fontSize: '14px' }}>
+                          Cancel {cancelAllCount} booking{cancelAllCount !== 1 ? 's' : ''}?
+                        </span>
+                        <Button
+                          variant="danger"
+                          onClick={handleCancelAll}
+                          isDisabled={cancellingAll}
+                          isLoading={cancellingAll}
+                          size="sm"
+                        >
+                          Confirm
+                        </Button>{' '}
+                        <Button
+                          variant="secondary"
+                          onClick={() => setConfirmCancelAll(false)}
+                          size="sm"
+                        >
+                          No
+                        </Button>
+                      </>
+                    ) : (
+                      <Button
+                        variant="danger"
+                        onClick={() => setConfirmCancelAll(true)}
+                      >
+                        Cancel All ({cancelAllCount})
+                      </Button>
+                    )}
                   </ToolbarItem>
                 )}
                 <ToolbarItem>

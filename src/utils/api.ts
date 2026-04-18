@@ -86,6 +86,14 @@ export const createBulkBooking = (data: BulkBookingRequest) =>
 export const cancelBooking = (id: string) =>
   request<{ status: string }>(`/bookings?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
 
+export interface BulkCancelResponse {
+  deleted: string[];
+  errors: string[];
+}
+
+export const bulkCancelBookings = (ids: string[]) =>
+  request<BulkCancelResponse>('/bookings/bulk/cancel', { method: 'DELETE', body: JSON.stringify({ ids }) });
+
 // Admin
 export interface AdminResponse {
   bookings: Booking[];
