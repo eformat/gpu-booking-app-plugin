@@ -1,6 +1,6 @@
 # Admin Dashboard
 
-<span class="badge">Topics: Admin Login, Bookings Management, Database Export/Import, Reservation Sync</span>
+<span class="badge">Topics: Bookings Management, Source Filter, Database Export/Import, Reservation Sync</span>
 
 ---
 
@@ -8,28 +8,20 @@
 
 The admin dashboard provides a centralised view of all bookings across the cluster, with tools to manage bookings, control Kueue reservation sync, and export or import the database.
 
+Admin access is determined by OpenShift RBAC -- users with the `gpubooking.openshift.io/bookings:admin` permission see the admin page in the console navigation. No separate login is required.
+
 ![images/admin-overview.png](images/admin-overview.png)
 
 ---
 
-## Logging In
+## Admin Controls
 
-Navigate to `/admin/login` and enter the admin password. On success, a session cookie is set and you are redirected to the admin dashboard.
+The controls card at the top of the page provides:
 
-The admin password is configured via the `ADMIN_PASSWORD` environment variable (or `server.adminPassword` in the Helm chart).
-
----
-
-## Header
-
-The header bar shows:
-
-- **Title and clock** -- live datetime in your browser's local timezone
-- **Reservations toggle** -- green ON / red OFF button to enable or disable Kueue reservation sync at runtime without redeploying
-- **Refresh** -- manually reload booking data
-- **Logout** -- end the admin session
-
-![images/admin-header.png](images/admin-header.png)
+- **Reservation Sync toggle** -- ON/OFF switch to enable or disable Kueue reservation sync at runtime without redeploying
+- **Export DB** -- download the current SQLite database as a backup
+- **Import DB** -- upload a replacement database file (choose file, then click Import)
+- **Delete All** -- remove all bookings with confirmation
 
 ---
 
@@ -43,27 +35,35 @@ The booking count updates to reflect the current filter, e.g. "18 of 129 booking
 
 ---
 
+## Source Filter
+
+The source filter buttons let you narrow bookings by their origin:
+
+- **All** -- show all bookings (default)
+- **Reserved** -- show only user-created bookings
+- **Consumed** -- show only Kueue auto-bookings
+
+Each button displays a count badge showing how many bookings match that source. The source filter works in combination with the resource filter and text filter.
+
+---
+
 ## Text Filter
 
-The search box in the toolbar filters by ID, user, resource, date, source, or description. Filtering is case-insensitive and matches substrings. This works in combination with the resource selector above.
+The search box in the toolbar filters by user, date, resource, source, or description. Filtering is case-insensitive and matches substrings. This works in combination with the resource selector and source filter above.
 
 ---
 
 ## Database Export / Import
 
-The Database controls allow you to download a backup of the SQLite database or restore from a previous backup.
-
 ![images/admin-filters-database.png](images/admin-filters-database.png)
 
 ### Export
 
-Click **Export** to download the current `bookings.db` file. The server flushes the WAL (Write-Ahead Log) before streaming the file, ensuring a consistent snapshot.
+Click **Export DB** to download the current `bookings.db` file. The server flushes the WAL (Write-Ahead Log) before streaming the file, ensuring a consistent snapshot.
 
 ### Import
 
-Click **Import** to upload a replacement database file. Accepted formats: `.db`, `.sqlite`, `.sqlite3` (max 100MB).
-
-A confirmation dialog appears before the import proceeds. On success, the current database is replaced and the bookings table refreshes automatically.
+Use the file chooser to select a replacement database file, then click **Import**. Accepted formats: `.db`, `.sqlite`, `.sqlite3` (max 100MB).
 
 <div class="alert alert-warning">
   <strong>Warning</strong>
@@ -81,12 +81,9 @@ The main table lists all bookings with sortable columns:
 | **ID** | Unique booking identifier (deterministic for Kueue bookings, random for user bookings) |
 | **User** | The booking owner (OpenShift username or namespace name for Kueue bookings) |
 | **Resource** | GPU resource type (e.g. `nvidia.com/gpu`, `nvidia.com/mig-1g.18gb`) |
-| **Unit** | Slot index (1-based) |
+| **Slot** | Slot index (0-based) |
 | **Date** | Booking date (YYYY-MM-DD) |
-| **Slot** | Always "Full Day" |
-| **Source** | `reserved` (user) or `consumed` (Kueue) |
-| **Hours (UTC)** | Full Day or specific hour range |
-| **Description** | User-provided description or dash |
+| **Source** | `reserved` (user) or `consumed` (Kueue), colour-coded |
 | **Created** | Timestamp when the booking was created |
 | **Actions** | Delete button with confirmation |
 
@@ -104,16 +101,16 @@ Click the **Delete** button on any row. A confirmation prompt appears with **Con
 
 ### Delete All
 
-Click **Delete All** in the table header. A confirmation prompt shows the total count. After deletion, consumed bookings will be repopulated on the next Kueue sync cycle.
+Click **Delete All** in the controls card. A confirmation modal appears before deletion proceeds. After deletion, consumed bookings will be repopulated on the next Kueue sync cycle.
 
 ---
 
 ## Reservation Sync Toggle
 
-The **Reservations ON/OFF** button in the header controls whether the server syncs Kueue LocalQueue usage and manages per-user ClusterQueues at runtime.
+The **Reservation Sync** switch in the controls card controls whether the server syncs Kueue LocalQueue usage and manages per-user ClusterQueues at runtime.
 
-- **ON** (green) -- the server polls LocalQueues, creates consumed bookings, and manages reservation ClusterQueues
-- **OFF** (red) -- sync and reservation management are paused; existing bookings and ClusterQueues are not affected
+- **ON** -- the server polls LocalQueues, creates consumed bookings, and manages reservation ClusterQueues
+- **OFF** -- sync and reservation management are paused; existing bookings and ClusterQueues are not affected
 
 This is useful for maintenance windows or debugging without needing to redeploy.
 
