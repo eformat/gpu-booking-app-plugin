@@ -382,7 +382,7 @@ func syncBookings(usages []resourceUsage, dates []string) error {
 						resource:  u.Resource,
 						slotIndex: slotIdx,
 						date:      date,
-						slotType:  "full",
+						slotType:  database.SlotTypeFull,
 					}
 					desiredMeta[id] = u.User
 				}
@@ -391,7 +391,7 @@ func syncBookings(usages []resourceUsage, dates []string) error {
 		}
 	}
 
-	rows, err := db.Query("SELECT id, resource, slot_index, date, slot_type FROM bookings WHERE source = 'consumed'")
+	rows, err := db.Query("SELECT id, resource, slot_index, date, slot_type FROM bookings WHERE source = ?", database.SourceConsumed)
 	if err != nil {
 		return fmt.Errorf("querying kueue bookings: %w", err)
 	}
@@ -412,9 +412,12 @@ func syncBookings(usages []resourceUsage, dates []string) error {
 			toRemove = append(toRemove, id)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		log.Printf("kueue sync: error iterating existing bookings: %v", err)
+	}
 
 	for _, id := range toRemove {
-		db.Exec("DELETE FROM bookings WHERE id = ? AND source = 'consumed'", id)
+		db.Exec("DELETE FROM bookings WHERE id = ? AND source = ?", id, database.SourceConsumed)
 	}
 	if len(toRemove) > 0 {
 		log.Printf("kueue sync: removed %d stale bookings", len(toRemove))
@@ -432,8 +435,8 @@ func syncBookings(usages []resourceUsage, dates []string) error {
 
 		var count int
 		err := db.QueryRow(
-			"SELECT COUNT(*) FROM bookings WHERE resource = ? AND slot_index = ? AND date = ? AND slot_type IN ('full', ?) AND source = 'reserved'",
-			key.resource, key.slotIndex, key.date, key.slotType,
+			"SELECT COUNT(*) FROM bookings WHERE resource = ? AND slot_index = ? AND date = ? AND slot_type IN (?, ?) AND source = ?",
+			key.resource, key.slotIndex, key.date, database.SlotTypeFull, key.slotType, database.SourceReserved,
 		).Scan(&count)
 		if err != nil {
 			log.Printf("kueue sync: conflict check failed for %s: %v", id, err)
@@ -445,8 +448,8 @@ func syncBookings(usages []resourceUsage, dates []string) error {
 		}
 
 		_, err = db.Exec(
-			"INSERT OR IGNORE INTO bookings (id, user, email, resource, slot_index, date, slot_type, created_at, source, description, start_hour, end_hour) VALUES (?, ?, '', ?, ?, ?, ?, ?, 'consumed', '', 0, 24)",
-			id, user, key.resource, key.slotIndex, key.date, key.slotType, createdAt,
+			"INSERT OR IGNORE INTO bookings (id, user, email, resource, slot_index, date, slot_type, created_at, source, description, start_hour, end_hour) VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, '', 0, 24)",
+			id, user, key.resource, key.slotIndex, key.date, key.slotType, createdAt, database.SourceConsumed,
 		)
 		if err != nil {
 			log.Printf("kueue sync: failed to insert booking %s: %v", id, err)

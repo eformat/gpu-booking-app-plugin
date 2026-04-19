@@ -12,7 +12,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'X-CSRFToken': getCSRFToken(),
-    ...(options?.headers as Record<string, string>),
+    ...(options?.headers as Record<string, string> | undefined),
   };
   const resp = await fetch(`${PROXY_BASE}${path}`, {
     ...options,

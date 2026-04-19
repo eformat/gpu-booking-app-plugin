@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/eformat/gpu-booking-plugin/pkg/database"
@@ -45,6 +46,26 @@ func sanitizeK8sName(name string) string {
 }
 
 var ReservationSyncEnabled = true
+
+// syncPending is used to coalesce multiple SyncReservations triggers into one.
+// Only one sync runs at a time; if another is requested while running, it will
+// run once more after the current one finishes.
+var syncPending int32
+
+// TriggerSyncReservations requests a reservation sync without blocking the caller.
+// Multiple rapid calls are coalesced — at most one goroutine runs at a time.
+func TriggerSyncReservations() {
+	if !ReservationSyncEnabled || k8sHost == "" || k8sToken == "" {
+		return
+	}
+	if !atomic.CompareAndSwapInt32(&syncPending, 0, 1) {
+		return
+	}
+	go func() {
+		SyncReservations()
+		atomic.StoreInt32(&syncPending, 0)
+	}()
+}
 
 type userReservation struct {
 	User      string
@@ -118,9 +139,9 @@ func getActiveReservations() ([]userReservation, error) {
 
 	rows, err := db.Query(
 		`SELECT user, resource, COUNT(DISTINCT slot_index) as unit_count, MAX(end_hour) as max_end_hour, MAX(date) as max_date
-		 FROM bookings WHERE date IN (?, ?) AND source = 'reserved'
+		 FROM bookings WHERE date IN (?, ?) AND source = ?
 		 GROUP BY user, resource`,
-		today, tomorrow,
+		today, tomorrow, database.SourceReserved,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("querying reservations: %w", err)
@@ -150,6 +171,9 @@ func getActiveReservations() ([]userReservation, error) {
 		if maxDate > userMaxDate[user] {
 			userMaxDate[user] = maxDate
 		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating reservation rows: %w", err)
 	}
 
 	var reservations []userReservation

@@ -12,6 +12,7 @@ import (
 )
 
 func AdminListBookings(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	user := GetUser(r)
 	if !user.IsAdmin {
 		HttpError(w, http.StatusForbidden, "admin_required")
@@ -19,7 +20,7 @@ func AdminListBookings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	db := database.DB()
-	rows, err := db.Query("SELECT " + database.BookingColumns + " FROM bookings ORDER BY date, slot_type")
+	rows, err := db.QueryContext(ctx, "SELECT "+database.BookingColumns+" FROM bookings ORDER BY date, slot_type")
 	if err != nil {
 		HttpError(w, http.StatusInternalServerError, "database_error")
 		return
@@ -30,9 +31,13 @@ func AdminListBookings(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		b, err := database.ScanBooking(rows)
 		if err != nil {
+			log.Printf("error scanning booking: %v", err)
 			continue
 		}
 		bookings = append(bookings, b)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("error iterating admin bookings: %v", err)
 	}
 
 	JsonResponse(w, map[string]any{
@@ -44,6 +49,7 @@ func AdminListBookings(w http.ResponseWriter, r *http.Request) {
 }
 
 func AdminDeleteBooking(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	user := GetUser(r)
 	if !user.IsAdmin {
 		HttpError(w, http.StatusForbidden, "admin_required")
@@ -55,18 +61,18 @@ func AdminDeleteBooking(w http.ResponseWriter, r *http.Request) {
 
 	// Delete all bookings when no id
 	if id == "" {
-		result, err := db.Exec("DELETE FROM bookings")
+		result, err := db.ExecContext(ctx, "DELETE FROM bookings")
 		if err != nil {
 			HttpError(w, http.StatusInternalServerError, "database_error")
 			return
 		}
 		rows, _ := result.RowsAffected()
 		JsonResponse(w, map[string]any{"status": "deleted", "count": rows})
-		go kube.SyncReservations()
+		kube.TriggerSyncReservations()
 		return
 	}
 
-	result, err := db.Exec("DELETE FROM bookings WHERE id = ?", id)
+	result, err := db.ExecContext(ctx, "DELETE FROM bookings WHERE id = ?", id)
 	if err != nil {
 		HttpError(w, http.StatusInternalServerError, "database_error")
 		return
@@ -79,7 +85,7 @@ func AdminDeleteBooking(w http.ResponseWriter, r *http.Request) {
 	}
 
 	JsonResponse(w, map[string]string{"status": "deleted"})
-	go kube.SyncReservations()
+	kube.TriggerSyncReservations()
 }
 
 func AdminReservationToggleHandler(w http.ResponseWriter, r *http.Request) {
@@ -207,7 +213,7 @@ func AdminImportDatabase(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Println("admin: database imported successfully")
-	go kube.SyncReservations()
+	kube.TriggerSyncReservations()
 
 	JsonResponse(w, map[string]string{"status": "imported"})
 }

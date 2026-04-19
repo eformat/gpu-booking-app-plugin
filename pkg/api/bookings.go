@@ -13,10 +13,11 @@ import (
 )
 
 func GetBookings(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	user := GetUser(r)
 	db := database.DB()
 
-	rows, err := db.Query("SELECT " + database.BookingColumns + " FROM bookings ORDER BY date, slot_type")
+	rows, err := db.QueryContext(ctx, "SELECT "+database.BookingColumns+" FROM bookings ORDER BY date, slot_type")
 	if err != nil {
 		HttpError(w, http.StatusInternalServerError, "database_error")
 		log.Printf("error querying bookings: %v", err)
@@ -33,12 +34,15 @@ func GetBookings(w http.ResponseWriter, r *http.Request) {
 		}
 		bookings = append(bookings, b)
 	}
+	if err := rows.Err(); err != nil {
+		log.Printf("error iterating bookings: %v", err)
+	}
 
 	// Build active reservations map: user -> clusterqueue name
 	activeRes := map[string]string{}
 	today := time.Now().Format("2006-01-02")
 	for _, b := range bookings {
-		if b.Source == "reserved" && b.Date == today {
+		if b.Source == database.SourceReserved && b.Date == today {
 			if _, ok := activeRes[b.User]; !ok {
 				activeRes[b.User] = "user-" + b.User
 			}
@@ -53,6 +57,7 @@ func GetBookings(w http.ResponseWriter, r *http.Request) {
 }
 
 func CreateBooking(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	user := GetUser(r)
 	db := database.DB()
 
@@ -70,13 +75,32 @@ func CreateBooking(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.SlotType != "full" {
+	if req.SlotType != database.SlotTypeFull {
 		HttpError(w, http.StatusBadRequest, "invalid_slot_type")
 		return
 	}
 
+	// Validate resource type exists
+	spec, ok := database.GPUSpecByType(req.Resource)
+	if !ok {
+		HttpError(w, http.StatusBadRequest, "invalid_resource")
+		return
+	}
+
+	// Validate slot index is within resource bounds
+	if req.SlotIndex < 0 || req.SlotIndex >= spec.Count {
+		HttpError(w, http.StatusBadRequest, "invalid_slot_index")
+		return
+	}
+
+	// Validate date format
+	if _, err := time.Parse("2006-01-02", req.Date); err != nil {
+		HttpError(w, http.StatusBadRequest, "invalid_date")
+		return
+	}
+
 	// Check for conflicts
-	rows, err := db.Query(
+	rows, err := db.QueryContext(ctx,
 		"SELECT id, source FROM bookings WHERE resource = ? AND slot_index = ? AND date = ?",
 		req.Resource, req.SlotIndex, req.Date,
 	)
@@ -92,12 +116,15 @@ func CreateBooking(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(&cID, &cSource); err != nil {
 			continue
 		}
-		if cSource == "reserved" {
+		if cSource == database.SourceReserved {
 			hasReservedConflict = true
 		}
 		conflictIDs = append(conflictIDs, cID)
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		log.Printf("error iterating conflict check: %v", err)
+	}
 
 	if hasReservedConflict {
 		JsonResponseStatus(w, http.StatusConflict, map[string]string{"error": "slot_taken"})
@@ -106,7 +133,7 @@ func CreateBooking(w http.ResponseWriter, r *http.Request) {
 
 	// Evict consumed bookings
 	for _, cID := range conflictIDs {
-		if _, err := db.Exec("DELETE FROM bookings WHERE id = ?", cID); err != nil {
+		if _, err := db.ExecContext(ctx, "DELETE FROM bookings WHERE id = ?", cID); err != nil {
 			log.Printf("error evicting consumed booking %s: %v", cID, err)
 		} else {
 			log.Printf("evicted consumed booking %s for reservation by %s", cID, user.Username)
@@ -130,9 +157,9 @@ func CreateBooking(w http.ResponseWriter, r *http.Request) {
 		endHour = 24
 	}
 
-	_, err = db.Exec(
-		"INSERT INTO bookings (id, user, email, resource, slot_index, date, slot_type, created_at, source, description, start_hour, end_hour) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?, ?)",
-		id, user.Username, "", req.Resource, req.SlotIndex, req.Date, req.SlotType, createdAt, desc, startHour, endHour,
+	_, err = db.ExecContext(ctx,
+		"INSERT INTO bookings (id, user, email, resource, slot_index, date, slot_type, created_at, source, description, start_hour, end_hour) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		id, user.Username, "", req.Resource, req.SlotIndex, req.Date, req.SlotType, createdAt, database.SourceReserved, desc, startHour, endHour,
 	)
 	if err != nil {
 		JsonResponseStatus(w, http.StatusConflict, map[string]string{"error": "slot_taken"})
@@ -147,17 +174,18 @@ func CreateBooking(w http.ResponseWriter, r *http.Request) {
 		Date:        req.Date,
 		SlotType:    req.SlotType,
 		CreatedAt:   createdAt,
-		Source:      "reserved",
+		Source:      database.SourceReserved,
 		Description: desc,
 		StartHour:   startHour,
 		EndHour:     endHour,
 	}
 
 	JsonResponseStatus(w, http.StatusCreated, booking)
-	go kube.SyncReservations()
+	kube.TriggerSyncReservations()
 }
 
 func DeleteBooking(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	id := r.URL.Query().Get("id")
 	if id == "" {
 		HttpError(w, http.StatusBadRequest, "missing_id")
@@ -168,7 +196,7 @@ func DeleteBooking(w http.ResponseWriter, r *http.Request) {
 	db := database.DB()
 
 	var owner, source string
-	err := db.QueryRow("SELECT user, source FROM bookings WHERE id = ?", id).Scan(&owner, &source)
+	err := db.QueryRowContext(ctx, "SELECT user, source FROM bookings WHERE id = ?", id).Scan(&owner, &source)
 	if err == sql.ErrNoRows {
 		HttpError(w, http.StatusNotFound, "not_found")
 		return
@@ -178,7 +206,7 @@ func DeleteBooking(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if source == "consumed" {
+	if source == database.SourceConsumed {
 		JsonResponseStatus(w, http.StatusForbidden, map[string]string{"error": "consumed_booking"})
 		return
 	}
@@ -188,17 +216,18 @@ func DeleteBooking(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = db.Exec("DELETE FROM bookings WHERE id = ?", id)
+	_, err = db.ExecContext(ctx, "DELETE FROM bookings WHERE id = ?", id)
 	if err != nil {
 		HttpError(w, http.StatusInternalServerError, "database_error")
 		return
 	}
 
 	JsonResponse(w, map[string]string{"status": "deleted"})
-	go kube.SyncReservations()
+	kube.TriggerSyncReservations()
 }
 
 func BulkCancelHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	user := GetUser(r)
 	db := database.DB()
 
@@ -210,11 +239,19 @@ func BulkCancelHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		HttpError(w, http.StatusInternalServerError, "database_error")
+		log.Printf("error starting transaction: %v", err)
+		return
+	}
+	defer tx.Rollback()
+
 	var deleted []string
 	var errors []string
 	for _, id := range req.IDs {
 		var owner, source string
-		err := db.QueryRow("SELECT user, source FROM bookings WHERE id = ?", id).Scan(&owner, &source)
+		err := tx.QueryRowContext(ctx, "SELECT user, source FROM bookings WHERE id = ?", id).Scan(&owner, &source)
 		if err == sql.ErrNoRows {
 			errors = append(errors, fmt.Sprintf("%s: not_found", id))
 			continue
@@ -223,7 +260,7 @@ func BulkCancelHandler(w http.ResponseWriter, r *http.Request) {
 			errors = append(errors, fmt.Sprintf("%s: database_error", id))
 			continue
 		}
-		if source == "consumed" {
+		if source == database.SourceConsumed {
 			errors = append(errors, fmt.Sprintf("%s: consumed_booking", id))
 			continue
 		}
@@ -231,11 +268,17 @@ func BulkCancelHandler(w http.ResponseWriter, r *http.Request) {
 			errors = append(errors, fmt.Sprintf("%s: forbidden", id))
 			continue
 		}
-		if _, err := db.Exec("DELETE FROM bookings WHERE id = ?", id); err != nil {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM bookings WHERE id = ?", id); err != nil {
 			errors = append(errors, fmt.Sprintf("%s: database_error", id))
 			continue
 		}
 		deleted = append(deleted, id)
+	}
+
+	if err := tx.Commit(); err != nil {
+		HttpError(w, http.StatusInternalServerError, "database_error")
+		log.Printf("error committing bulk cancel: %v", err)
+		return
 	}
 
 	JsonResponse(w, map[string]any{
@@ -244,11 +287,12 @@ func BulkCancelHandler(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if len(deleted) > 0 {
-		go kube.SyncReservations()
+		kube.TriggerSyncReservations()
 	}
 }
 
 func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	user := GetUser(r)
 	db := database.DB()
 
@@ -273,6 +317,14 @@ func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 	if req.StartDate > req.EndDate {
 		HttpError(w, http.StatusBadRequest, "invalid_date_range")
 		return
+	}
+
+	// Validate all resource types exist
+	for resource := range req.Resources {
+		if _, ok := database.GPUSpecByType(resource); !ok {
+			HttpError(w, http.StatusBadRequest, fmt.Sprintf("invalid_resource: %s", resource))
+			return
+		}
 	}
 
 	desc := req.Description
@@ -306,6 +358,15 @@ func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := database.GetConfig(BookingWindowDays)
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		HttpError(w, http.StatusInternalServerError, "database_error")
+		log.Printf("error starting transaction: %v", err)
+		return
+	}
+	defer tx.Rollback()
+
 	var created []database.Booking
 	var errors []string
 
@@ -314,7 +375,7 @@ func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		for _, date := range dates {
-			slotRows, err := db.Query(
+			slotRows, err := tx.QueryContext(ctx,
 				"SELECT slot_index, source, id FROM bookings WHERE resource = ? AND date = ?",
 				resource, date,
 			)
@@ -328,7 +389,7 @@ func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 				var idx int
 				var src, bid string
 				if err := slotRows.Scan(&idx, &src, &bid); err == nil {
-					if src == "reserved" {
+					if src == database.SourceReserved {
 						reserved[idx] = true
 					} else {
 						consumedIDs[idx] = bid
@@ -336,6 +397,9 @@ func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			slotRows.Close()
+			if err := slotRows.Err(); err != nil {
+				log.Printf("error iterating slots for %s on %s: %v", resource, date, err)
+			}
 
 			maxUnits := 0
 			for _, gr := range cfg.Resources {
@@ -355,7 +419,7 @@ func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				if cID, ok := consumedIDs[unitIdx]; ok {
-					if _, err := db.Exec("DELETE FROM bookings WHERE id = ?", cID); err != nil {
+					if _, err := tx.ExecContext(ctx, "DELETE FROM bookings WHERE id = ?", cID); err != nil {
 						log.Printf("bulk booking: error evicting consumed booking %s: %v", cID, err)
 						continue
 					}
@@ -365,9 +429,9 @@ func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 				id := fmt.Sprintf("booking-%d", time.Now().UnixNano())
 				createdAt := time.Now().UTC().Format(time.RFC3339)
 
-				_, err := db.Exec(
-					"INSERT INTO bookings (id, user, email, resource, slot_index, date, slot_type, created_at, source, description, start_hour, end_hour) VALUES (?, ?, ?, ?, ?, ?, 'full', ?, 'reserved', ?, ?, ?)",
-					id, user.Username, "", resource, unitIdx, date, createdAt, desc, startHour, endHour,
+				_, err := tx.ExecContext(ctx,
+					"INSERT INTO bookings (id, user, email, resource, slot_index, date, slot_type, created_at, source, description, start_hour, end_hour) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					id, user.Username, "", resource, unitIdx, date, database.SlotTypeFull, createdAt, database.SourceReserved, desc, startHour, endHour,
 				)
 				if err != nil {
 					log.Printf("bulk booking: insert failed for %s unit %d on %s: %v", resource, unitIdx, date, err)
@@ -380,9 +444,9 @@ func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 					Resource:    resource,
 					SlotIndex:   unitIdx,
 					Date:        date,
-					SlotType:    "full",
+					SlotType:    database.SlotTypeFull,
 					CreatedAt:   createdAt,
-					Source:      "reserved",
+					Source:      database.SourceReserved,
 					Description: desc,
 					StartHour:   startHour,
 					EndHour:     endHour,
@@ -396,7 +460,14 @@ func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(created) == 0 && len(errors) > 0 {
+		// Rollback is handled by defer
 		JsonResponseStatus(w, http.StatusConflict, map[string]any{"error": "no_slots_available", "details": errors})
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		HttpError(w, http.StatusInternalServerError, "database_error")
+		log.Printf("error committing bulk booking: %v", err)
 		return
 	}
 
@@ -406,6 +477,6 @@ func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if len(created) > 0 {
-		go kube.SyncReservations()
+		kube.TriggerSyncReservations()
 	}
 }

@@ -17,8 +17,6 @@ import { SyncIcon, UserIcon, OutlinedQuestionCircleIcon } from '@patternfly/reac
 import { Link } from 'react-router-dom';
 import { useAuth } from '../utils/AuthContext';
 import {
-  getBookings,
-  getConfig,
   createBooking as apiCreateBooking,
   createBulkBooking,
   cancelBooking,
@@ -26,11 +24,10 @@ import {
 } from '../utils/api';
 import {
   FALLBACK_GPU_RESOURCES,
-  GPUResource,
   Booking,
   todayStr,
-  DEFAULT_BOOKING_WINDOW_DAYS,
 } from '../utils/constants';
+import { useBookings, useConfig, useClock } from '../utils/hooks';
 import ResourceSelector from './ResourceSelector';
 import CalendarGrid from './CalendarGrid';
 import GpuUsagePanel from './GpuUsagePanel';
@@ -39,17 +36,15 @@ import BookingModal from './BookingModal';
 
 const BookingPage: React.FC = () => {
   useAuth();
-  const [bookings, setBookings] = React.useState<Booking[]>([]);
+  const { bookings, activeReservations, currentUser, loading: bookingsLoading, fetchBookings } = useBookings();
+  const { gpuResources, bookingWindowDays } = useConfig();
+  const utcNow = useClock();
+
   const [loading, setLoading] = React.useState(true);
   const [reservingKey, setReservingKey] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
-  const [gpuResources, setGpuResources] = React.useState<GPUResource[]>(FALLBACK_GPU_RESOURCES);
   const [selectedResources, setSelectedResources] = React.useState<string[]>([FALLBACK_GPU_RESOURCES[0].type]);
   const [confirmCancelId, setConfirmCancelId] = React.useState<string | null>(null);
-  const [bookingWindowDays, setBookingWindowDays] = React.useState(DEFAULT_BOOKING_WINDOW_DAYS);
-  const [utcNow, setUtcNow] = React.useState('');
-  const [activeReservations, setActiveReservations] = React.useState<Record<string, string>>({});
-  const [currentUser, setCurrentUser] = React.useState('');
   const [showBookingModal, setShowBookingModal] = React.useState(false);
   const [editBooking, setEditBooking] = React.useState<Booking | null>(null);
   const [contextMenu, setContextMenu] = React.useState<{ x: number; y: number } | null>(null);
@@ -62,53 +57,13 @@ const BookingPage: React.FC = () => {
   const [viewMonth, setViewMonth] = React.useState(now.getMonth());
   const [selectedDates, setSelectedDates] = React.useState<string[]>([todayStr()]);
 
+  // Sync loading state from bookings hook
+  React.useEffect(() => {
+    if (!bookingsLoading) setLoading(false);
+  }, [bookingsLoading]);
+
   const selectedResourceObjects = gpuResources.filter((r) => selectedResources.includes(r.type));
   const gridDates = React.useMemo(() => [...selectedDates].sort(), [selectedDates]);
-
-  const fetchBookings = React.useCallback(async () => {
-    try {
-      const result = await getBookings();
-      setBookings(result.bookings || []);
-      setActiveReservations(result.activeReservations || {});
-      setCurrentUser(result.currentUser || '');
-    } catch (e) {
-      // ignore fetch errors silently
-    }
-    setLoading(false);
-  }, []);
-
-  React.useEffect(() => {
-    getConfig()
-      .then((data) => {
-        if (data.bookingWindowDays) setBookingWindowDays(data.bookingWindowDays);
-        if (Array.isArray(data.resources) && data.resources.length > 0) {
-          setGpuResources(data.resources);
-        }
-      })
-      .catch(() => {});
-  }, []);
-
-  React.useEffect(() => {
-    fetchBookings();
-    const interval = setInterval(fetchBookings, 30000);
-    return () => clearInterval(interval);
-  }, [fetchBookings]);
-
-  React.useEffect(() => {
-    function updateClock() {
-      const n = new Date();
-      setUtcNow(
-        n.toLocaleString(undefined, {
-          year: 'numeric', month: '2-digit', day: '2-digit',
-          hour: '2-digit', minute: '2-digit', second: '2-digit',
-          timeZoneName: 'short',
-        }),
-      );
-    }
-    updateClock();
-    const interval = setInterval(updateClock, 1000);
-    return () => clearInterval(interval);
-  }, []);
 
   React.useEffect(() => {
     if (!contextMenu) return;
@@ -193,10 +148,8 @@ const BookingPage: React.FC = () => {
     const myBookings = bookings.filter((b) => b.user === currentUser && b.source === 'reserved');
     const myDates = Array.from(new Set(myBookings.map((b) => b.date))).sort();
     if (myDates.length === 0) return;
-    // Auto-select resource types that have user bookings
     const myResourceTypes = Array.from(new Set(myBookings.map((b) => b.resource)));
     setSelectedResources(myResourceTypes);
-    // Navigate calendar to the month of the earliest booking
     const [fy, fm] = myDates[0].split('-').map(Number);
     setViewYear(fy);
     setViewMonth(fm - 1);

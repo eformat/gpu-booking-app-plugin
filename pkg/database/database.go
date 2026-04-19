@@ -46,6 +46,13 @@ var GPUResourceSpecs = []GPUResourceSpec{
 const (
 	TotalCPU    = 316
 	TotalMemory = 3460 // Gi
+
+	// Booking sources
+	SourceReserved = "reserved"
+	SourceConsumed = "consumed"
+
+	// Slot types
+	SlotTypeFull = "full"
 )
 
 type Config struct {

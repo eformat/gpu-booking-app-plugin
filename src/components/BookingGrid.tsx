@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Button, Label } from '@patternfly/react-core';
+import { Label } from '@patternfly/react-core';
 import { MicrochipIcon } from '@patternfly/react-icons';
 import {
   Table,
@@ -16,8 +16,8 @@ import {
   isPastDate,
   isWeekend,
   todayStr,
-  formatHour,
 } from '../utils/constants';
+import BookingCell from './BookingCell';
 
 interface BookingGridProps {
   resource: GPUResource;
@@ -137,102 +137,24 @@ const BookingGrid: React.FC<BookingGridProps> = ({
                         <span>/ {resource.count} available</span>
                       </div>
                     </Td>
-                    {Array.from({ length: resource.count }, (_, unitIdx) => {
-                      const booking = getBooking(unitIdx, date);
-                      const cellKey = `${resource.type}-${unitIdx}-${date}-${SLOT_TYPE}`;
-                      const isReserving = reservingKey === cellKey;
-
-                      return (
-                        <Td key={unitIdx} style={{ textAlign: 'center', opacity: past ? 0.7 : 1 }}>
-                          {booking ? (
-                            <div title={booking.description || undefined}>
-                              <div style={{ fontSize: '13px', fontWeight: 500 }}>
-                                {booking.user}
-                              </div>
-                              {booking.description && (
-                                <div style={{ fontSize: '10px', color: 'var(--pf-t--global--text--color--regular)', opacity: 0.7, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100px', margin: '0 auto' }}>
-                                  {booking.description}
-                                </div>
-                              )}
-                              {(booking.startHour !== 0 || booking.endHour !== 24) && (
-                                <div style={{ fontSize: '10px', color: 'var(--pf-t--global--text--color--regular)', opacity: 0.7 }}>
-                                  {formatHour(booking.startHour)}&mdash;{booking.endHour === 24 ? '00:00' : formatHour(booking.endHour)} UTC
-                                </div>
-                              )}
-                              {past ? (
-                                <span style={{ fontSize: '10px', color: 'var(--pf-t--global--text--color--regular)', opacity: 0.7 }}>
-                                  {booking.source === 'consumed' ? '\u26A1 consumed' : activeReservations[booking.user] ? `\uD83D\uDC0D ${activeReservations[booking.user]}` : ''}
-                                </span>
-                              ) : booking.source === 'consumed' ? (
-                                <div>
-                                  <div style={{ fontSize: '11px', color: '#0066cc', fontWeight: 500 }}>
-                                    {'\u26A1'} consumed
-                                  </div>
-                                  <Button
-                                    variant="warning"
-                                    size="sm"
-                                    onClick={() => onReserve(resource.type, unitIdx, date, SLOT_TYPE)}
-                                    isDisabled={isReserving}
-                                    style={{ marginTop: '4px' }}
-                                  >
-                                    {isReserving ? '...' : 'Override'}
-                                  </Button>
-                                </div>
-                              ) : booking.user === currentUser || activeReservations[booking.user] ? (
-                                <div>
-                                  {activeReservations[booking.user] && (
-                                    <div style={{ fontSize: '11px', color: '#1e7e34', fontWeight: 500 }}>
-                                      {'\uD83D\uDC0D'} {activeReservations[booking.user]}
-                                    </div>
-                                  )}
-                                  {confirmCancelId === booking.id ? (
-                                    <div style={{ display: 'flex', gap: '4px', marginTop: '4px', justifyContent: 'center' }}>
-                                      <Button variant="danger" size="sm" onClick={() => onCancel(booking.id)}>
-                                        Confirm
-                                      </Button>
-                                      <Button variant="secondary" size="sm" onClick={() => onConfirmCancel(null)}>
-                                        No
-                                      </Button>
-                                    </div>
-                                  ) : booking.user === currentUser ? (
-                                    <div style={{ display: 'flex', gap: '4px', marginTop: '4px', justifyContent: 'center' }}>
-                                      <Button variant="link" size="sm" onClick={() => onEdit(booking)}>
-                                        Edit
-                                      </Button>
-                                      <Button variant="link" size="sm" isDanger onClick={() => onConfirmCancel(booking.id)}>
-                                        Cancel
-                                      </Button>
-                                    </div>
-                                  ) : null}
-                                </div>
-                              ) : (
-                                confirmCancelId === booking.id ? (
-                                  <div style={{ display: 'flex', gap: '4px', marginTop: '4px', justifyContent: 'center' }}>
-                                    <Button variant="danger" size="sm" onClick={() => onCancel(booking.id)}>
-                                      Confirm
-                                    </Button>
-                                    <Button variant="secondary" size="sm" onClick={() => onConfirmCancel(null)}>
-                                      No
-                                    </Button>
-                                  </div>
-                                ) : null
-                              )}
-                            </div>
-                          ) : past ? (
-                            <span style={{ fontSize: '12px', color: 'var(--pf-t--global--text--color--regular)', opacity: 0.7 }}>&mdash;</span>
-                          ) : (
-                            <Button
-                              variant="primary"
-                              size="sm"
-                              onClick={() => onReserve(resource.type, unitIdx, date, SLOT_TYPE)}
-                              isDisabled={isReserving}
-                            >
-                              {isReserving ? '...' : 'Reserve'}
-                            </Button>
-                          )}
-                        </Td>
-                      );
-                    })}
+                    {Array.from({ length: resource.count }, (_, unitIdx) => (
+                      <BookingCell
+                        key={unitIdx}
+                        booking={getBooking(unitIdx, date)}
+                        resourceType={resource.type}
+                        unitIdx={unitIdx}
+                        date={date}
+                        past={past}
+                        activeReservations={activeReservations}
+                        currentUser={currentUser}
+                        reservingKey={reservingKey}
+                        confirmCancelId={confirmCancelId}
+                        onReserve={onReserve}
+                        onCancel={onCancel}
+                        onEdit={onEdit}
+                        onConfirmCancel={onConfirmCancel}
+                      />
+                    ))}
                   </Tr>
                 </React.Fragment>
               );
