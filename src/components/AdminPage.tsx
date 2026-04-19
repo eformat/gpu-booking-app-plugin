@@ -63,6 +63,7 @@ const AdminPage: React.FC = () => {
   const [importFilename, setImportFilename] = React.useState('');
   const [gpuResources, setGpuResources] = React.useState<GPUResource[]>(FALLBACK_GPU_RESOURCES);
   const [selectedResources, setSelectedResources] = React.useState<string[]>([]);
+  const [sourceFilter, setSourceFilter] = React.useState<'all' | 'reserved' | 'consumed'>('all');
 
   const fetchData = React.useCallback(async () => {
     try {
@@ -152,6 +153,7 @@ const AdminPage: React.FC = () => {
   // Filter
   const filtered = bookings.filter((b) => {
     if (selectedResources.length > 0 && !selectedResources.includes(b.resource)) return false;
+    if (sourceFilter !== 'all' && b.source !== sourceFilter) return false;
     if (!filter) return true;
     const q = filter.toLowerCase();
     return (
@@ -261,6 +263,28 @@ const AdminPage: React.FC = () => {
               selectedResources={selectedResources}
               onSelectionChange={setSelectedResources}
             />
+          </div>
+
+          {/* Source filter */}
+          <div style={{ marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ fontSize: '14px', color: 'var(--pf-t--global--text--color--regular)', opacity: 0.7, marginRight: '4px' }}>Source:</span>
+            {(['all', 'reserved', 'consumed'] as const).map((s) => (
+              <Button
+                key={s}
+                variant={sourceFilter === s ? 'primary' : 'secondary'}
+                size="sm"
+                onClick={() => setSourceFilter(s)}
+                style={sourceFilter === s && s === 'consumed' ? { backgroundColor: '#0066CC' } : undefined}
+              >
+                {s === 'all' ? 'All' : s === 'reserved' ? 'Reserved' : 'Consumed'}
+                {' '}
+                <Label isCompact style={{ marginLeft: '4px' }}>
+                  {s === 'all'
+                    ? bookings.length
+                    : bookings.filter((b) => b.source === s).length}
+                </Label>
+              </Button>
+            ))}
           </div>
 
           {/* Toolbar */}
