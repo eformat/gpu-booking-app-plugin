@@ -157,7 +157,9 @@ This ensures `user-mhepburn` namespaces and ClusterQueues match the existing con
 
 ## GPU Resource Pool
 
-The system manages a single H200 node with the following GPU resources:
+GPU resources are configured externally via a ConfigMap (`gpu-booking-plugin-gpu-config`), mounted as `/app/config/gpu-config.json`. This allows each cluster deployment to define its own GPU types, counts, and cluster totals without rebuilding the application. The backend falls back to built-in defaults if the config file is absent.
+
+The ConfigMap is generated from the `gpuConfig` section in `chart/values.yaml`. The default configuration manages a single H200 node:
 
 | Resource | Count | GPU Equivalent | CPU Share | CPU per Unit | Memory per Unit |
 |----------|-------|---------------|-----------|-------------|-----------------|
@@ -167,6 +169,8 @@ The system manages a single H200 node with the following GPU resources:
 | `nvidia.com/mig-1g.18gb` | 16 | 0.125 | 0.78125% | 2 cores | 27 Gi |
 
 **Total pool:** 316 CPU cores, 3460 Gi memory, 16 GPU equivalents.
+
+The config file path can be overridden with the `GPU_CONFIG_PATH` environment variable.
 
 ## Kueue Resource Hierarchy
 
@@ -315,6 +319,7 @@ Stage 3: final (UBI9 ubi-minimal)
   ├── /app/backend (Go binary)
   ├── /app/dist/ (plugin static assets)
   ├── /app/data/bookings.db (SQLite, PVC-backed)
+  ├── /app/config/gpu-config.json (ConfigMap-mounted GPU config)
   └── Port 9443 (TLS via service-serving certs)
 ```
 
@@ -325,6 +330,7 @@ Stage 3: final (UBI9 ubi-minimal)
 | **Deployment** | Single replica, non-root (UID 1001), read-only rootfs, liveness/readiness on `/api/health` |
 | **ConsolePlugin** CR | Registers plugin with OpenShift console, `UserToken` proxy type, service backend |
 | **Service** | ClusterIP on port 9443, `service.beta.openshift.io/serving-cert-secret-name` annotation |
+| **ConfigMap** | GPU resource configuration (`gpu-config.json`), mounted at `/app/config` |
 | **PVC** | 2Gi for SQLite database persistence |
 | **ServiceAccount** | With RBAC for Kueue, namespace, auth, and HardwareProfile APIs |
 | **ClusterRole** | `localqueues`, `clusterqueues`, `cohorts` (Kueue); `namespaces`, `tokenreviews`, `subjectaccessreviews` (K8s); `hardwareprofiles` (OpenDataHub) |
@@ -378,4 +384,4 @@ Markdown files are imported as strings via webpack `asset/source` rule and rende
 | `src/utils/AuthContext.tsx` | Auth state management with 30s TTL cache |
 | `src/docs/topicRegistry.ts` | Help topic definitions and navigation structure |
 | `console-extensions.json` | Plugin routes and navigation registration |
-| `chart/` | Helm chart (deployment, ConsolePlugin CR, RBAC, PVC, service) |
+| `chart/` | Helm chart (deployment, ConsolePlugin CR, RBAC, PVC, ConfigMap, service) |
