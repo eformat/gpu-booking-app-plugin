@@ -39,7 +39,7 @@ jobs:
           image: ${{ env.IMAGE_NAME }}
           tags: ${{ env.TAGS }} ${{ steps.vars.outputs.version }}
           containerfiles: |
-            ./Dockerfile
+            ./Containerfile
 
       # Login to Registry
       - name: Log in to the Container registry
