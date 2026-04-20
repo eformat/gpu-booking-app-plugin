@@ -467,16 +467,13 @@ func syncBookings(usages []resourceUsage, dates []string) error {
 }
 
 func kueueBookingID(namespace, resource string, slotIndex int, date string) string {
-	short := resource
-	switch resource {
-	case "nvidia.com/gpu":
-		short = "gpu"
-	case "nvidia.com/mig-3g.71gb":
-		short = "mig3g"
-	case "nvidia.com/mig-2g.35gb":
-		short = "mig2g"
-	case "nvidia.com/mig-1g.18gb":
-		short = "mig1g"
+	parts := strings.Split(resource, "/")
+	short := parts[len(parts)-1]
+	// Strip everything after "." and remove dashes for compact ID
+	// e.g. "mig-3g.71gb" -> "mig-3g" -> "mig3g", "gpu" -> "gpu"
+	if dotIdx := strings.Index(short, "."); dotIdx >= 0 {
+		short = short[:dotIdx]
 	}
+	short = strings.ReplaceAll(short, "-", "")
 	return fmt.Sprintf("kueue-%s-%s-s%d-%s", namespace, short, slotIndex, date)
 }

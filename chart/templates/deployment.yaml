@@ -85,6 +85,9 @@ spec:
               readOnly: true
               mountPath: /var/serving-cert
             {{- end }}
+            - name: gpu-config
+              mountPath: /app/config
+              readOnly: true
           securityContext:
             allowPrivilegeEscalation: false
             runAsNonRoot: true
@@ -105,3 +108,6 @@ spec:
             secretName: {{ .Values.plugin.name }}-cert
             defaultMode: 420
         {{- end }}
+        - name: gpu-config
+          configMap:
+            name: {{ .Values.plugin.name }}-gpu-config

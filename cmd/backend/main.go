@@ -48,6 +48,21 @@ func main() {
 		}
 	}
 
+	// Load GPU config from file (falls back to built-in defaults if not found)
+	gpuConfigPath := os.Getenv("GPU_CONFIG_PATH")
+	if gpuConfigPath == "" {
+		gpuConfigPath = "/app/config/gpu-config.json"
+	}
+	if _, err := os.Stat(gpuConfigPath); err == nil {
+		if err := database.LoadConfigFromFile(gpuConfigPath); err != nil {
+			log.Fatalf("Failed to load GPU config from %s: %v", gpuConfigPath, err)
+		}
+		log.Printf("GPU config loaded from %s (%d resources, totalCPU=%d, totalMemory=%d)",
+			gpuConfigPath, len(database.GPUResourceSpecs), database.TotalCPU, database.TotalMemory)
+	} else {
+		log.Printf("GPU config file not found at %s, using built-in defaults", gpuConfigPath)
+	}
+
 	// Init database
 	if err := database.Init(dbPath); err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)

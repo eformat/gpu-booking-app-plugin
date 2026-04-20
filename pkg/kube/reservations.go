@@ -214,17 +214,17 @@ func getActiveReservations() ([]userReservation, error) {
 }
 
 func normalizedResourceID(resource string) string {
-	switch resource {
-	case "nvidia.com/gpu":
-		return "gpu"
-	case "nvidia.com/mig-3g.71gb":
-		return "mig-71gb"
-	case "nvidia.com/mig-2g.35gb":
-		return "mig-35gb"
-	case "nvidia.com/mig-1g.18gb":
-		return "mig-18gb"
+	parts := strings.Split(resource, "/")
+	short := parts[len(parts)-1]
+
+	// For MIG types like "mig-3g.71gb", simplify to "mig-71gb"
+	if strings.HasPrefix(short, "mig-") {
+		if dotIdx := strings.LastIndex(short, "."); dotIdx >= 0 {
+			short = "mig-" + short[dotIdx+1:]
+		}
 	}
-	return "unk"
+
+	return short
 }
 
 func applyUserReservation(res userReservation) error {

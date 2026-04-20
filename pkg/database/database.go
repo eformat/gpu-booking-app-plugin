@@ -2,6 +2,7 @@ package database
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -43,10 +44,12 @@ var GPUResourceSpecs = []GPUResourceSpec{
 	{Name: "MIG 1g.18gb", Type: "nvidia.com/mig-1g.18gb", Count: 16, Share: 0.0078125, GPUEquivalent: 0.125},
 }
 
-const (
+var (
 	TotalCPU    = 316
 	TotalMemory = 3460 // Gi
+)
 
+const (
 	// Booking sources
 	SourceReserved = "reserved"
 	SourceConsumed = "consumed"
@@ -154,6 +157,36 @@ func GetConfig(bookingWindowDays int) Config {
 		TotalCPU:          TotalCPU,
 		TotalMemory:       TotalMemory,
 	}
+}
+
+// gpuConfigFile is the JSON structure for the external GPU config file.
+type gpuConfigFile struct {
+	Resources   []GPUResourceSpec `json:"resources"`
+	TotalCPU    int               `json:"totalCpu"`
+	TotalMemory int               `json:"totalMemory"`
+}
+
+// LoadConfigFromFile reads GPU configuration from a JSON file, overwriting
+// the built-in defaults. Returns an error if the file cannot be read or parsed.
+func LoadConfigFromFile(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading gpu config: %w", err)
+	}
+	var cfg gpuConfigFile
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return fmt.Errorf("parsing gpu config: %w", err)
+	}
+	if len(cfg.Resources) > 0 {
+		GPUResourceSpecs = cfg.Resources
+	}
+	if cfg.TotalCPU > 0 {
+		TotalCPU = cfg.TotalCPU
+	}
+	if cfg.TotalMemory > 0 {
+		TotalMemory = cfg.TotalMemory
+	}
+	return nil
 }
 
 func ScanBooking(rows *sql.Rows) (Booking, error) {
