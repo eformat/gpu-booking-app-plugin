@@ -17,14 +17,14 @@ The GPU Booking Console Plugin is an OpenShift Console Dynamic Plugin that manag
 +------------------------------------------------------------------+
 | OpenShift Console                                                |
 |                                                                  |
-|  +------------------------------------------------+             |
-|  | GPU Booking Plugin (React/PF6)                  |             |
-|  |   BookingPage | AdminPage | HelpPage            |             |
+|  +------------------------------------------------+              |
+|  | GPU Booking Plugin (React/PF6)                 |              |
+|  |   BookingPage | AdminPage | HelpPage           |              |
 |  +-----------+------------------------------------+              |
 |              | /api/proxy/plugin/gpu-booking-plugin/backend/api  |
 |              | (Bearer token injected by console)                |
 |  +-----------v------------------------------------+              |
-|  | Console Proxy (UserToken)                       |             |
+|  | Console Proxy (UserToken)                      |              |
 |  +-----------+------------------------------------+              |
 +--------------+---------------------------------------------------+
                |
@@ -32,7 +32,7 @@ The GPU Booking Console Plugin is an OpenShift Console Dynamic Plugin that manag
   | GPU Booking Pod (:9443 TLS)                                  |
   |                                                              |
   |  Go Backend                                                  |
-  |  +-- Auth Middleware (TokenReview + SubjectAccessReview)      |
+  |  +-- Auth Middleware (TokenReview + SubjectAccessReview)     |
   |  +-- Booking API (CRUD, bulk, conflict resolution)           |
   |  +-- Admin API (list, delete, export/import DB)              |
   |  +-- Kueue Sync Loop (30s - consumed bookings)               |
