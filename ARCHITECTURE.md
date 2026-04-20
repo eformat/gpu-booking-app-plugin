@@ -14,34 +14,34 @@ The GPU Booking Console Plugin is an OpenShift Console Dynamic Plugin that manag
 - **OpenShift Console Proxy** - authentication via `UserToken` proxy type
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│ OpenShift Console                                               │
-│                                                                 │
-│  ┌──────────────────────────────────────────────────┐           │
-│  │ GPU Booking Plugin (React/PF6)                   │           │
-│  │  BookingPage | AdminPage | HelpPage              │           │
-│  └──────────┬───────────────────────────────────────┘           │
-│             │ /api/proxy/plugin/gpu-booking-plugin/backend/api  │
-│             │ (Bearer token injected by console)                │
-│  ┌──────────▼───────────────────────────────────────┐           │
-│  │ Console Proxy (UserToken)                        │           │
-│  └──────────┬───────────────────────────────────────┘           │
-└─────────────┼───────────────────────────────────────────────────┘
-              │
-   ┌──────────▼──────────────────────────────────────────────┐
-   │ GPU Booking Pod (:9443 TLS)                             │
-   │                                                         │
-   │  Go Backend                                             │
-   │  ├── Auth Middleware (TokenReview + SubjectAccessReview) │
-   │  ├── Booking API (CRUD, bulk, conflict resolution)      │
-   │  ├── Admin API (list, delete, export/import DB)         │
-   │  ├── Kueue Sync Loop (30s - consumed bookings)          │
-   │  ├── Reservation Sync Loop (10m - K8s resources)        │
-   │  ├── Expiry Cleaner (10m - stale ClusterQueues)         │
-   │  └── Static Asset Server (plugin dist/)                 │
-   │                                                         │
-   │  SQLite DB (/app/data/bookings.db)                      │
-   └─────────────────────────────────────────────────────────┘
++------------------------------------------------------------------+
+| OpenShift Console                                                |
+|                                                                  |
+|  +------------------------------------------------+             |
+|  | GPU Booking Plugin (React/PF6)                  |             |
+|  |   BookingPage | AdminPage | HelpPage            |             |
+|  +-----------+------------------------------------+              |
+|              | /api/proxy/plugin/gpu-booking-plugin/backend/api  |
+|              | (Bearer token injected by console)                |
+|  +-----------v------------------------------------+              |
+|  | Console Proxy (UserToken)                       |             |
+|  +-----------+------------------------------------+              |
++--------------+---------------------------------------------------+
+               |
+  +------------v------------------------------------------------+
+  | GPU Booking Pod (:9443 TLS)                                  |
+  |                                                              |
+  |  Go Backend                                                  |
+  |  +-- Auth Middleware (TokenReview + SubjectAccessReview)      |
+  |  +-- Booking API (CRUD, bulk, conflict resolution)           |
+  |  +-- Admin API (list, delete, export/import DB)              |
+  |  +-- Kueue Sync Loop (30s - consumed bookings)               |
+  |  +-- Reservation Sync Loop (10m - K8s resources)             |
+  |  +-- Expiry Cleaner (10m - stale ClusterQueues)              |
+  |  +-- Static Asset Server (plugin dist/)                      |
+  |                                                              |
+  |  SQLite DB (/app/data/bookings.db)                           |
+  +--------------------------------------------------------------+
 ```
 
 ## Frontend Architecture
