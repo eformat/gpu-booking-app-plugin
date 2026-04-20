@@ -1,6 +1,5 @@
 node_modules/
 dist/
 *.db
-backend
 .env
 .playwright-cli/
