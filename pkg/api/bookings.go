@@ -386,35 +386,87 @@ func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 	var created []database.Booking
 	var errors []string
 
+	// Collect requested resources (skip zero counts)
+	var resources []string
 	for resource, count := range req.Resources {
-		if count <= 0 {
-			continue
+		if count > 0 {
+			resources = append(resources, resource)
 		}
-		for _, date := range dates {
-			slotRows, err := tx.QueryContext(ctx,
-				"SELECT slot_index, source, id FROM bookings WHERE resource = ? AND date = ?",
-				resource, date,
-			)
-			if err != nil {
-				errors = append(errors, fmt.Sprintf("%s on %s: database error", resource, date))
+	}
+
+	// Batch fetch all existing bookings for requested resources and dates in one query
+	type slotKey struct {
+		resource string
+		date     string
+	}
+	type slotInfo struct {
+		reserved    map[int]bool
+		consumedIDs map[int]string
+	}
+	slotMap := map[slotKey]*slotInfo{}
+
+	if len(resources) > 0 && len(dates) > 0 {
+		args := make([]any, 0, len(resources)+len(dates))
+		resPlaceholders := make([]byte, 0, len(resources)*2)
+		for i, r := range resources {
+			if i > 0 {
+				resPlaceholders = append(resPlaceholders, ',')
+			}
+			resPlaceholders = append(resPlaceholders, '?')
+			args = append(args, r)
+		}
+		datePlaceholders := make([]byte, 0, len(dates)*2)
+		for i, d := range dates {
+			if i > 0 {
+				datePlaceholders = append(datePlaceholders, ',')
+			}
+			datePlaceholders = append(datePlaceholders, '?')
+			args = append(args, d)
+		}
+
+		query := fmt.Sprintf(
+			"SELECT resource, date, slot_index, source, id FROM bookings WHERE resource IN (%s) AND date IN (%s)",
+			string(resPlaceholders), string(datePlaceholders),
+		)
+		slotRows, err := tx.QueryContext(ctx, query, args...)
+		if err != nil {
+			HttpError(w, http.StatusInternalServerError, "database_error")
+			slog.Error("failed to batch query bookings", "error", err)
+			return
+		}
+		for slotRows.Next() {
+			var res, date, src, bid string
+			var idx int
+			if err := slotRows.Scan(&res, &date, &idx, &src, &bid); err != nil {
+				slog.Error("failed scanning slot row", "error", err)
 				continue
 			}
-			reserved := map[int]bool{}
-			consumedIDs := map[int]string{}
-			for slotRows.Next() {
-				var idx int
-				var src, bid string
-				if err := slotRows.Scan(&idx, &src, &bid); err == nil {
-					if src == database.SourceReserved {
-						reserved[idx] = true
-					} else {
-						consumedIDs[idx] = bid
-					}
-				}
+			key := slotKey{resource: res, date: date}
+			info, ok := slotMap[key]
+			if !ok {
+				info = &slotInfo{reserved: map[int]bool{}, consumedIDs: map[int]string{}}
+				slotMap[key] = info
 			}
-			slotRows.Close()
-			if err := slotRows.Err(); err != nil {
-				slog.Error("failed iterating slots", "resource", resource, "date", date, "error", err)
+			if src == database.SourceReserved {
+				info.reserved[idx] = true
+			} else {
+				info.consumedIDs[idx] = bid
+			}
+		}
+		slotRows.Close()
+		if err := slotRows.Err(); err != nil {
+			slog.Error("failed iterating batch slot query", "error", err)
+		}
+	}
+
+	// Process each resource/date using pre-fetched data
+	for _, resource := range resources {
+		count := req.Resources[resource]
+		for _, date := range dates {
+			key := slotKey{resource: resource, date: date}
+			info := slotMap[key]
+			if info == nil {
+				info = &slotInfo{reserved: map[int]bool{}, consumedIDs: map[int]string{}}
 			}
 
 			maxUnits := 0
@@ -431,10 +483,10 @@ func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 
 			booked := 0
 			for unitIdx := 0; unitIdx < maxUnits && booked < count; unitIdx++ {
-				if reserved[unitIdx] {
+				if info.reserved[unitIdx] {
 					continue
 				}
-				if cID, ok := consumedIDs[unitIdx]; ok {
+				if cID, ok := info.consumedIDs[unitIdx]; ok {
 					if _, err := tx.ExecContext(ctx, "DELETE FROM bookings WHERE id = ?", cID); err != nil {
 						slog.Error("bulk booking: failed to evict consumed booking", "bookingId", cID, "error", err)
 						continue
