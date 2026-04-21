@@ -88,8 +88,9 @@
 }
 
 .gpu-help-codeblock {
-  background: #1e1e1e;
-  color: #d4d4d4;
+  background: var(--pf-t--global--background--color--secondary--default);
+  color: var(--pf-t--global--text--color--regular);
+  border: 1px solid var(--pf-t--global--border--color--default);
   padding: 16px;
   border-radius: 4px;
   overflow-x: auto;
@@ -107,7 +108,8 @@
   font-size: 11px;
   font-weight: 600;
   color: white;
-  background: #383838;
+  background: var(--pf-t--global--background--color--secondary--default);
+  border: 1px solid var(--pf-t--global--border--color--default);
   margin: 0 2px;
 }
 
@@ -116,16 +118,16 @@
 }
 
 .gpu-help-markdown .badge.badge-success {
-  background: #1e7e34;
+  background: var(--pf-t--global--color--nonstatus--green--default);
 }
 
 .gpu-help-markdown .badge.badge-warning {
-  background: #f0ab00;
-  color: #1a1a1a;
+  background: var(--pf-t--global--color--nonstatus--orange--default);
+  color: var(--pf-t--global--text--color--inverse);
 }
 
 .gpu-help-markdown .badge.badge-danger {
-  background: #c9190b;
+  background: var(--pf-t--global--color--nonstatus--red--default);
 }
 
 /* Pagination */

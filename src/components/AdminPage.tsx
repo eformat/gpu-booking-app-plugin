@@ -279,7 +279,7 @@ const AdminPage: React.FC = () => {
                 variant={sourceFilter === s ? 'primary' : 'secondary'}
                 size="sm"
                 onClick={() => { setSourceFilter(s); setPage(1); }}
-                style={sourceFilter === s && s === 'consumed' ? { backgroundColor: '#0066CC' } : undefined}
+                style={undefined}
               >
                 {s === 'all' ? 'All' : s === 'reserved' ? 'Reserved' : 'Consumed'}
               </Button>

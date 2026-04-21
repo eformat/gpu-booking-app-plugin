@@ -115,7 +115,7 @@ const GpuUsagePanel: React.FC<GpuUsagePanelProps> = ({ bookings, resources, sele
                   </span>
                 </div>
 
-                <div style={{ display: 'flex', height: '32px', borderRadius: '4px', overflow: 'hidden', backgroundColor: '#f0f0f0' }}>
+                <div style={{ display: 'flex', height: '32px', borderRadius: '4px', overflow: 'hidden', backgroundColor: 'var(--pf-t--global--background--color--secondary--default)' }}>
                   {Array.from({ length: totalSlots }, (_, unitIdx) => {
                     const unitBookings = bookings.filter(
                       (b) => b.resource === resource.type && displayDates.includes(b.date) && b.slotIndex === unitIdx,

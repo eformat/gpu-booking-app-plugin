@@ -47,7 +47,7 @@ export const RESOURCE_COLORS: Record<string, string> = {
   'nvidia.com/mig-1g.18gb': '#F0AB00',
 };
 
-export const FREE_COLOR = '#D2D2D2';
+export const FREE_COLOR = '#6A6E73';
 export const CONSUMED_COLOR = '#4CB140';
 export const RESERVED_COLOR = '#EE0000';
 

@@ -60,14 +60,14 @@
 .gpu-calendar-cell--selected {
   border-color: var(--pf-t--global--color--brand--default);
   background: var(--pf-t--global--background--color--brand--default);
-  box-shadow: 0 0 0 2px rgba(0, 102, 204, 0.2);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--pf-t--global--color--brand--default) 20%, transparent);
 }
 
 .gpu-calendar-cell--today,
 .gpu-calendar-cell--today.gpu-calendar-cell--selected {
   border-color: var(--pf-t--global--color--nonstatus--red--default);
-  background: rgba(238, 0, 0, 0.05);
-  box-shadow: 0 0 0 2px rgba(238, 0, 0, 0.15);
+  background: color-mix(in srgb, var(--pf-t--global--color--nonstatus--red--default) 8%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--pf-t--global--color--nonstatus--red--default) 20%, transparent);
 }
 
 .gpu-calendar-cell--disabled {
@@ -114,8 +114,9 @@
   padding: 0 6px;
   border-radius: 999px;
   margin-top: 2px;
-  background: #383838;
-  color: white;
+  background: var(--pf-t--global--background--color--secondary--default);
+  color: var(--pf-t--global--text--color--on-dynamic);
+  border: 1px solid var(--pf-t--global--border--color--default);
   line-height: 1.4;
 }
 

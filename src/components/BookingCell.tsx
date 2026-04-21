@@ -82,7 +82,7 @@ const BookingCell: React.FC<BookingCellProps> = ({
     if (booking.source === 'consumed') {
       return (
         <div>
-          <div style={{ fontSize: '11px', color: '#0066cc', fontWeight: 500 }}>
+          <div style={{ fontSize: '11px', color: 'var(--pf-t--global--color--brand--default)', fontWeight: 500 }}>
             {'\u26A1'} consumed
           </div>
           <Button
@@ -102,7 +102,7 @@ const BookingCell: React.FC<BookingCellProps> = ({
       return (
         <div>
           {activeReservations[booking.user] && (
-            <div style={{ fontSize: '11px', color: '#1e7e34', fontWeight: 500 }}>
+            <div style={{ fontSize: '11px', color: 'var(--pf-t--global--color--nonstatus--green--default)', fontWeight: 500 }}>
               {'\uD83D\uDC0D'} {activeReservations[booking.user]}
             </div>
           )}

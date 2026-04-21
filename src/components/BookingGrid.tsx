@@ -97,17 +97,17 @@ const BookingGrid: React.FC<BookingGridProps> = ({
                 (b) => b.resource === resource.type && b.date === date && b.slotType === SLOT_TYPE,
               ).length;
 
-              let headerBg = '#383838';
-              if (today) headerBg = '#EE0000';
-              else if (past) headerBg = '#6A6A6A';
-              else if (weekend) headerBg = '#8A8A8A';
+              let headerBg = 'var(--pf-t--global--background--color--secondary--default)';
+              if (today) headerBg = 'var(--pf-t--global--color--nonstatus--red--default)';
+              else if (past) headerBg = 'var(--pf-t--global--background--color--disabled--default)';
+              else if (weekend) headerBg = 'var(--pf-t--global--background--color--disabled--default)';
 
               return (
                 <React.Fragment key={date}>
                   <Tr style={{ backgroundColor: headerBg }}>
                     <Td colSpan={resource.count + 1} style={{ padding: '8px 16px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                        <span style={{ color: 'white', fontWeight: 'bold', fontSize: '14px' }}>
+                        <span style={{ color: today ? 'white' : 'var(--pf-t--global--text--color--regular)', fontWeight: 'bold', fontSize: '14px' }}>
                           {fullDisplay}
                         </span>
                         {today && (
@@ -129,8 +129,8 @@ const BookingGrid: React.FC<BookingGridProps> = ({
                         <span style={{
                           fontWeight: 500,
                           color: resource.count - dateBookingCount === 0
-                            ? '#c9190b'
-                            : '#1e7e34',
+                            ? 'var(--pf-t--global--color--nonstatus--red--default)'
+                            : 'var(--pf-t--global--color--nonstatus--green--default)',
                         }}>
                           {resource.count - dateBookingCount}
                         </span>
