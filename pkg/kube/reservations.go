@@ -47,24 +47,43 @@ func sanitizeK8sName(name string) string {
 
 var ReservationSyncEnabled = true
 
-// syncPending is used to coalesce multiple SyncReservations triggers into one.
-// Only one sync runs at a time; if another is requested while running, it will
-// run once more after the current one finishes.
-var syncPending int32
+// syncState tracks coalesced sync requests:
+//   0 = idle, 1 = running, 2 = running + re-run requested
+var syncState int32
 
 // TriggerSyncReservations requests a reservation sync without blocking the caller.
-// Multiple rapid calls are coalesced — at most one goroutine runs at a time.
+// Multiple rapid calls are coalesced — at most one goroutine runs at a time, but
+// if a new trigger arrives while running, a follow-up sync is guaranteed.
 func TriggerSyncReservations() {
 	if !ReservationSyncEnabled || k8sHost == "" || k8sToken == "" {
 		return
 	}
-	if !atomic.CompareAndSwapInt32(&syncPending, 0, 1) {
-		return
+	for {
+		state := atomic.LoadInt32(&syncState)
+		switch state {
+		case 0: // idle → start running
+			if atomic.CompareAndSwapInt32(&syncState, 0, 1) {
+				go func() {
+					for {
+						SyncReservations()
+						// Try to go idle; if re-run was requested (state==2), loop again
+						if atomic.CompareAndSwapInt32(&syncState, 1, 0) {
+							return
+						}
+						// state was 2 (re-run requested), reset to 1 and loop
+						atomic.StoreInt32(&syncState, 1)
+					}
+				}()
+				return
+			}
+		case 1: // running → request re-run
+			if atomic.CompareAndSwapInt32(&syncState, 1, 2) {
+				return
+			}
+		case 2: // re-run already requested, nothing to do
+			return
+		}
 	}
-	go func() {
-		SyncReservations()
-		atomic.StoreInt32(&syncPending, 0)
-	}()
 }
 
 type userReservation struct {
