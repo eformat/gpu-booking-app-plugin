@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -20,7 +20,7 @@ func GetBookings(w http.ResponseWriter, r *http.Request) {
 	rows, err := db.QueryContext(ctx, "SELECT "+database.BookingColumns+" FROM bookings ORDER BY date, slot_type")
 	if err != nil {
 		HttpError(w, http.StatusInternalServerError, "database_error")
-		log.Printf("error querying bookings: %v", err)
+		slog.Error("failed to query bookings", "error", err)
 		return
 	}
 	defer rows.Close()
@@ -29,13 +29,13 @@ func GetBookings(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		b, err := database.ScanBooking(rows)
 		if err != nil {
-			log.Printf("error scanning booking: %v", err)
+			slog.Error("failed to scan booking", "error", err)
 			continue
 		}
 		bookings = append(bookings, b)
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("error iterating bookings: %v", err)
+		slog.Error("failed iterating bookings", "error", err)
 	}
 
 	// Build active reservations map: user -> clusterqueue name
@@ -106,7 +106,7 @@ func CreateBooking(w http.ResponseWriter, r *http.Request) {
 	)
 	if err != nil {
 		HttpError(w, http.StatusInternalServerError, "database_error")
-		log.Printf("error checking conflicts: %v", err)
+		slog.Error("failed to check booking conflicts", "error", err)
 		return
 	}
 	var conflictIDs []string
@@ -123,7 +123,7 @@ func CreateBooking(w http.ResponseWriter, r *http.Request) {
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		log.Printf("error iterating conflict check: %v", err)
+		slog.Error("failed iterating conflict check", "error", err)
 	}
 
 	if hasReservedConflict {
@@ -134,9 +134,9 @@ func CreateBooking(w http.ResponseWriter, r *http.Request) {
 	// Evict consumed bookings
 	for _, cID := range conflictIDs {
 		if _, err := db.ExecContext(ctx, "DELETE FROM bookings WHERE id = ?", cID); err != nil {
-			log.Printf("error evicting consumed booking %s: %v", cID, err)
+			slog.Error("failed to evict consumed booking", "bookingId", cID, "error", err)
 		} else {
-			log.Printf("evicted consumed booking %s for reservation by %s", cID, user.Username)
+			slog.Info("evicted consumed booking for reservation", "bookingId", cID, "user", user.Username)
 		}
 	}
 
@@ -180,6 +180,7 @@ func CreateBooking(w http.ResponseWriter, r *http.Request) {
 		EndHour:     endHour,
 	}
 
+	slog.Info("AUDIT: booking created", "user", user.Username, "bookingId", id, "resource", req.Resource, "slot", req.SlotIndex, "date", req.Date, "remote_addr", r.RemoteAddr)
 	JsonResponseStatus(w, http.StatusCreated, booking)
 	kube.TriggerSyncReservations()
 }
@@ -222,6 +223,7 @@ func DeleteBooking(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	slog.Info("AUDIT: booking deleted", "user", user.Username, "bookingId", id, "owner", owner, "remote_addr", r.RemoteAddr)
 	JsonResponse(w, map[string]string{"status": "deleted"})
 	kube.TriggerSyncReservations()
 }
@@ -242,7 +244,7 @@ func BulkCancelHandler(w http.ResponseWriter, r *http.Request) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		HttpError(w, http.StatusInternalServerError, "database_error")
-		log.Printf("error starting transaction: %v", err)
+		slog.Error("failed to start transaction", "error", err)
 		return
 	}
 	defer tx.Rollback()
@@ -277,8 +279,12 @@ func BulkCancelHandler(w http.ResponseWriter, r *http.Request) {
 
 	if err := tx.Commit(); err != nil {
 		HttpError(w, http.StatusInternalServerError, "database_error")
-		log.Printf("error committing bulk cancel: %v", err)
+		slog.Error("failed to commit bulk cancel", "error", err)
 		return
+	}
+
+	if len(deleted) > 0 {
+		slog.Info("AUDIT: bulk cancel", "user", user.Username, "deleted_count", len(deleted), "error_count", len(errors), "remote_addr", r.RemoteAddr)
 	}
 
 	JsonResponse(w, map[string]any{
@@ -362,7 +368,7 @@ func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		HttpError(w, http.StatusInternalServerError, "database_error")
-		log.Printf("error starting transaction: %v", err)
+		slog.Error("failed to start transaction", "error", err)
 		return
 	}
 	defer tx.Rollback()
@@ -398,7 +404,7 @@ func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			slotRows.Close()
 			if err := slotRows.Err(); err != nil {
-				log.Printf("error iterating slots for %s on %s: %v", resource, date, err)
+				slog.Error("failed iterating slots", "resource", resource, "date", date, "error", err)
 			}
 
 			maxUnits := 0
@@ -420,10 +426,10 @@ func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 				}
 				if cID, ok := consumedIDs[unitIdx]; ok {
 					if _, err := tx.ExecContext(ctx, "DELETE FROM bookings WHERE id = ?", cID); err != nil {
-						log.Printf("bulk booking: error evicting consumed booking %s: %v", cID, err)
+						slog.Error("bulk booking: failed to evict consumed booking", "bookingId", cID, "error", err)
 						continue
 					}
-					log.Printf("bulk booking: evicted consumed booking %s for reservation by %s", cID, user.Username)
+					slog.Info("bulk booking: evicted consumed booking", "bookingId", cID, "user", user.Username)
 				}
 
 				id := fmt.Sprintf("booking-%d", time.Now().UnixNano())
@@ -434,7 +440,7 @@ func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 					id, user.Username, "", resource, unitIdx, date, database.SlotTypeFull, createdAt, database.SourceReserved, desc, startHour, endHour,
 				)
 				if err != nil {
-					log.Printf("bulk booking: insert failed for %s unit %d on %s: %v", resource, unitIdx, date, err)
+					slog.Error("bulk booking: insert failed", "resource", resource, "slot", unitIdx, "date", date, "error", err)
 					continue
 				}
 
@@ -467,9 +473,11 @@ func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 
 	if err := tx.Commit(); err != nil {
 		HttpError(w, http.StatusInternalServerError, "database_error")
-		log.Printf("error committing bulk booking: %v", err)
+		slog.Error("failed to commit bulk booking", "error", err)
 		return
 	}
+
+	slog.Info("AUDIT: bulk booking created", "user", user.Username, "created_count", len(created), "error_count", len(errors), "start_date", req.StartDate, "end_date", req.EndDate, "remote_addr", r.RemoteAddr)
 
 	JsonResponseStatus(w, http.StatusCreated, map[string]any{
 		"bookings": created,

@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -43,18 +43,36 @@ var (
 	DevMode bool
 )
 
+func init() {
+	go authCacheCleaner()
+}
+
+func authCacheCleaner() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		now := time.Now()
+		authCache.Range(func(key, value any) bool {
+			if cu, ok := value.(*cachedUser); ok && now.After(cu.expiresAt) {
+				authCache.Delete(key)
+			}
+			return true
+		})
+	}
+}
+
 func initAuthClient() {
 	authOnce.Do(func() {
 		config, err := rest.InClusterConfig()
 		if err != nil {
 			authInitErr = err
-			log.Printf("Warning: auth client not available (RBAC won't work): %v", err)
+			slog.Warn("auth client not available, RBAC disabled", "error", err)
 			return
 		}
 		authClient, err = kubernetes.NewForConfig(config)
 		if err != nil {
 			authInitErr = err
-			log.Printf("Warning: auth client not available (RBAC won't work): %v", err)
+			slog.Warn("auth client not available, RBAC disabled", "error", err)
 		}
 	})
 }

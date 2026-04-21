@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -15,6 +15,12 @@ import (
 )
 
 func main() {
+	// Structured JSON logging
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+	slog.SetDefault(logger)
+
 	// Database path
 	dbPath := os.Getenv("DB_PATH")
 	if dbPath == "" {
@@ -51,10 +57,7 @@ func main() {
 	// Dev mode (anonymous admin access when outside cluster)
 	api.DevMode = os.Getenv("DEV_MODE") == "true"
 	if api.DevMode {
-		log.Println("==========================================================")
-		log.Println("WARNING: DEV_MODE=true — anonymous admin access is enabled")
-		log.Println("WARNING: DO NOT run with DEV_MODE=true in production")
-		log.Println("==========================================================")
+		slog.Warn("DEV_MODE enabled — anonymous admin access is active, do NOT use in production")
 	}
 
 	// Load GPU config from file (falls back to built-in defaults if not found)
@@ -64,20 +67,21 @@ func main() {
 	}
 	if _, err := os.Stat(gpuConfigPath); err == nil {
 		if err := database.LoadConfigFromFile(gpuConfigPath); err != nil {
-			log.Fatalf("Failed to load GPU config from %s: %v", gpuConfigPath, err)
+			slog.Error("failed to load GPU config", "path", gpuConfigPath, "error", err)
+			os.Exit(1)
 		}
-		log.Printf("GPU config loaded from %s (%d resources, totalCPU=%d, totalMemory=%d)",
-			gpuConfigPath, len(database.GPUResourceSpecs), database.TotalCPU, database.TotalMemory)
+		slog.Info("GPU config loaded", "path", gpuConfigPath, "resources", len(database.GPUResourceSpecs), "totalCPU", database.TotalCPU, "totalMemory", database.TotalMemory)
 	} else {
-		log.Printf("GPU config file not found at %s, using built-in defaults", gpuConfigPath)
+		slog.Info("GPU config file not found, using built-in defaults", "path", gpuConfigPath)
 	}
 
 	// Init database
 	if err := database.Init(dbPath); err != nil {
-		log.Fatalf("Failed to initialize database: %v", err)
+		slog.Error("failed to initialize database", "path", dbPath, "error", err)
+		os.Exit(1)
 	}
 	defer database.Close()
-	log.Printf("database initialized at %s", dbPath)
+	slog.Info("database initialized", "path", dbPath)
 
 	// Init Kubernetes client and sync loops
 	kube.InitK8sClient()
@@ -144,16 +148,22 @@ func main() {
 	certFile := os.Getenv("TLS_CERT_FILE")
 	keyFile := os.Getenv("TLS_KEY_FILE")
 
-	log.Printf("Starting server on :%s", port)
+	slog.Info("starting server", "port", port)
 
 	if certFile != "" && keyFile != "" {
-		log.Printf("TLS enabled: cert=%s key=%s", certFile, keyFile)
+		slog.Info("TLS enabled", "cert", certFile, "key", keyFile)
 		if err := http.ListenAndServeTLS(":"+port, certFile, keyFile, r); err != nil {
-			log.Fatalf("Server failed: %v", err)
+			slog.Error("server failed", "error", err)
+			os.Exit(1)
+		}
+	} else if api.DevMode {
+		slog.Warn("TLS disabled — running plain HTTP (dev mode only)")
+		if err := http.ListenAndServe(":"+port, r); err != nil {
+			slog.Error("server failed", "error", err)
+			os.Exit(1)
 		}
 	} else {
-		if err := http.ListenAndServe(":"+port, r); err != nil {
-			log.Fatalf("Server failed: %v", err)
-		}
+		slog.Error("TLS_CERT_FILE and TLS_KEY_FILE are required in production (set DEV_MODE=true to bypass)")
+		os.Exit(1)
 	}
 }

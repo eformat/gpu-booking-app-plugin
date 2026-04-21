@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -81,7 +81,7 @@ func InitK8sClient() {
 	if initK8sFromKubeconfig() {
 		return
 	}
-	log.Println("k8s client: no cluster access available")
+	slog.Info("k8s client: no cluster access available")
 }
 
 func initK8sInCluster() bool {
@@ -116,7 +116,7 @@ func initK8sInCluster() bool {
 		k8sHTTPClient.Transport.(*http.Transport).TLSClientConfig.RootCAs = pool
 	}
 
-	log.Printf("k8s client: using in-cluster config (%s)", k8sHost)
+	slog.Info("k8s client: using in-cluster config", "host", k8sHost)
 	return true
 }
 
@@ -143,7 +143,7 @@ func initK8sFromKubeconfig() bool {
 		} `json:"users"`
 	}
 	if err := json.Unmarshal(out, &kc); err != nil {
-		log.Printf("k8s client: failed to parse kubeconfig: %v", err)
+		slog.Error("k8s client: failed to parse kubeconfig", "error", err)
 		return false
 	}
 
@@ -151,7 +151,7 @@ func initK8sFromKubeconfig() bool {
 		return false
 	}
 	if len(kc.Users) == 0 || kc.Users[0].User.Token == "" {
-		log.Println("k8s client: kubeconfig has no token (client cert auth not supported)")
+		slog.Warn("k8s client: kubeconfig has no token (client cert auth not supported)")
 		return false
 	}
 
@@ -176,21 +176,21 @@ func initK8sFromKubeconfig() bool {
 		Transport: &http.Transport{TLSClientConfig: tlsConfig},
 	}
 
-	log.Printf("k8s client: using kubeconfig (%s)", k8sHost)
+	slog.Info("k8s client: using kubeconfig", "host", k8sHost)
 	return true
 }
 
 func InitKueueSync() {
 	if !KueueSyncEnabled {
-		log.Println("kueue sync disabled")
+		slog.Info("kueue sync disabled")
 		return
 	}
 	if k8sHost == "" || k8sToken == "" {
-		log.Println("kueue sync: no k8s client available, disabling")
+		slog.Info("kueue sync: no k8s client available, disabling")
 		return
 	}
 
-	log.Printf("kueue sync: enabled, interval=%ds, bookingDays=%d (0=rest of week)", KueueSyncInterval, KueueBookingDays)
+	slog.Info("kueue sync: enabled", "interval_seconds", KueueSyncInterval, "booking_days", KueueBookingDays)
 	go kueueSyncLoop()
 }
 
@@ -198,7 +198,7 @@ func kueueSyncLoop() {
 	time.Sleep(5 * time.Second)
 	for {
 		if err := kueueSync(); err != nil {
-			log.Printf("kueue sync error: %v", err)
+			slog.Error("kueue sync error", "error", err)
 		}
 		time.Sleep(time.Duration(KueueSyncInterval) * time.Second)
 	}
@@ -232,7 +232,7 @@ func kueueSync() error {
 				if _, ok := nsCache[q.Metadata.Namespace]; !ok {
 					user, err := getNamespaceRequester(q.Metadata.Namespace)
 					if err != nil {
-						log.Printf("kueue sync: cannot get requester for namespace %s: %v", q.Metadata.Namespace, err)
+						slog.Warn("kueue sync: cannot get requester for namespace", "namespace", q.Metadata.Namespace, "error", err)
 						user = q.Metadata.Namespace
 					}
 					nsCache[q.Metadata.Namespace] = user
@@ -413,14 +413,14 @@ func syncBookings(usages []resourceUsage, dates []string) error {
 		}
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("kueue sync: error iterating existing bookings: %v", err)
+		slog.Error("kueue sync: error iterating existing bookings", "error", err)
 	}
 
 	for _, id := range toRemove {
 		db.Exec("DELETE FROM bookings WHERE id = ? AND source = ?", id, database.SourceConsumed)
 	}
 	if len(toRemove) > 0 {
-		log.Printf("kueue sync: removed %d stale bookings", len(toRemove))
+		slog.Info("kueue sync: removed stale bookings", "count", len(toRemove))
 	}
 
 	added := 0
@@ -439,7 +439,7 @@ func syncBookings(usages []resourceUsage, dates []string) error {
 			key.resource, key.slotIndex, key.date, database.SlotTypeFull, key.slotType, database.SourceReserved,
 		).Scan(&count)
 		if err != nil {
-			log.Printf("kueue sync: conflict check failed for %s: %v", id, err)
+			slog.Error("kueue sync: conflict check failed", "bookingId", id, "error", err)
 			continue
 		}
 		if count > 0 {
@@ -452,15 +452,14 @@ func syncBookings(usages []resourceUsage, dates []string) error {
 			id, user, key.resource, key.slotIndex, key.date, key.slotType, createdAt, database.SourceConsumed,
 		)
 		if err != nil {
-			log.Printf("kueue sync: failed to insert booking %s: %v", id, err)
+			slog.Error("kueue sync: failed to insert booking", "bookingId", id, "error", err)
 			continue
 		}
 		added++
 	}
 
 	if added > 0 || len(toRemove) > 0 {
-		log.Printf("kueue sync: added=%d, removed=%d, skipped=%d (manual conflict), total_desired=%d",
-			added, len(toRemove), skipped, len(desired))
+		slog.Info("kueue sync: reconciled", "added", added, "removed", len(toRemove), "skipped", skipped, "total_desired", len(desired))
 	}
 
 	return nil

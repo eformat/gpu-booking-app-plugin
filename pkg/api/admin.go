@@ -3,7 +3,7 @@ package api
 import (
 	"encoding/json"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -79,13 +79,13 @@ func AdminListBookings(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		b, err := database.ScanBooking(rows)
 		if err != nil {
-			log.Printf("error scanning booking: %v", err)
+			slog.Error("failed to scan booking", "error", err)
 			continue
 		}
 		bookings = append(bookings, b)
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("error iterating admin bookings: %v", err)
+		slog.Error("failed iterating admin bookings", "error", err)
 	}
 
 	JsonResponse(w, map[string]any{
@@ -118,6 +118,7 @@ func AdminDeleteBooking(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		rows, _ := result.RowsAffected()
+		slog.Info("AUDIT: admin delete all bookings", "user", user.Username, "deleted_count", rows, "remote_addr", r.RemoteAddr)
 		JsonResponse(w, map[string]any{"status": "deleted", "count": rows})
 		kube.TriggerSyncReservations()
 		return
@@ -135,6 +136,7 @@ func AdminDeleteBooking(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	slog.Info("AUDIT: admin delete booking", "user", user.Username, "bookingId", id, "remote_addr", r.RemoteAddr)
 	JsonResponse(w, map[string]string{"status": "deleted"})
 	kube.TriggerSyncReservations()
 }
@@ -155,7 +157,7 @@ func AdminReservationToggleHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	kube.ReservationSyncEnabled = req.Enabled
-	log.Printf("admin: reservation sync set to enabled=%v", req.Enabled)
+	slog.Info("AUDIT: admin reservation sync toggled", "user", user.Username, "enabled", req.Enabled, "remote_addr", r.RemoteAddr)
 
 	JsonResponse(w, map[string]any{"reservationSyncEnabled": kube.ReservationSyncEnabled})
 }
@@ -167,20 +169,20 @@ func AdminExportDatabase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("AUDIT: admin database export requested by user=%q from remote_addr=%s", user.Username, r.RemoteAddr)
+	slog.Info("AUDIT: admin database export requested", "user", user.Username, "remote_addr", r.RemoteAddr)
 
 	db := database.DB()
 
 	// Flush WAL
 	if _, err := db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
-		log.Printf("admin export: WAL checkpoint failed: %v", err)
+		slog.Error("admin export: WAL checkpoint failed", "error", err)
 		HttpError(w, http.StatusInternalServerError, "checkpoint_failed")
 		return
 	}
 
 	f, err := os.Open(database.DBFilePath)
 	if err != nil {
-		log.Printf("admin export: failed to open db file: %v", err)
+		slog.Error("admin export: failed to open db file", "error", err)
 		HttpError(w, http.StatusInternalServerError, "file_open_failed")
 		return
 	}
@@ -192,7 +194,7 @@ func AdminExportDatabase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("AUDIT: admin database export serving file_size=%d to user=%q", stat.Size(), user.Username)
+	slog.Info("AUDIT: admin database export serving", "user", user.Username, "file_size", stat.Size())
 
 	w.Header().Set("Content-Disposition", "attachment; filename=bookings.db")
 	w.Header().Set("Content-Type", "application/octet-stream")
@@ -206,7 +208,7 @@ func AdminImportDatabase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("AUDIT: admin database import requested by user=%q from remote_addr=%s", user.Username, r.RemoteAddr)
+	slog.Info("AUDIT: admin database import requested", "user", user.Username, "remote_addr", r.RemoteAddr)
 
 	r.Body = http.MaxBytesReader(w, r.Body, 100<<20)
 
@@ -264,12 +266,12 @@ func AdminImportDatabase(w http.ResponseWriter, r *http.Request) {
 	os.Remove(database.DBFilePath + "-shm")
 
 	if err := database.OpenDB(database.DBFilePath); err != nil {
-		log.Printf("admin import: failed to reopen database: %v", err)
+		slog.Error("admin import: failed to reopen database", "error", err)
 		HttpError(w, http.StatusInternalServerError, "reopen_failed")
 		return
 	}
 
-	log.Printf("AUDIT: admin database imported successfully by user=%q", user.Username)
+	slog.Info("AUDIT: admin database imported successfully", "user", user.Username)
 	kube.TriggerSyncReservations()
 
 	JsonResponse(w, map[string]string{"status": "imported"})

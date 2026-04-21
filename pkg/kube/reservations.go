@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/url"
@@ -99,10 +99,10 @@ type userReservation struct {
 
 func InitReservationSync() {
 	if k8sHost == "" || k8sToken == "" {
-		log.Println("reservation sync: not running in-cluster, disabling")
+		slog.Info("reservation sync: not running in-cluster, disabling")
 		return
 	}
-	log.Println("reservation sync: enabled, cleaner interval=10m")
+	slog.Info("reservation sync: enabled", "cleaner_interval", "10m")
 	go reservationCleanerLoop()
 }
 
@@ -112,7 +112,7 @@ func reservationCleanerLoop() {
 		if ReservationSyncEnabled {
 			SyncReservations()
 			if err := cleanExpiredReservations(); err != nil {
-				log.Printf("reservation cleaner error: %v", err)
+				slog.Error("reservation cleaner error", "error", err)
 			}
 		}
 		time.Sleep(reservationCleanInterval)
@@ -126,13 +126,13 @@ func SyncReservations() {
 
 	reservations, err := getActiveReservations()
 	if err != nil {
-		log.Printf("reservation sync: %v", err)
+		slog.Error("reservation sync failed", "error", err)
 		return
 	}
 
 	for _, res := range reservations {
 		if err := applyUserReservation(res); err != nil {
-			log.Printf("reservation sync: failed to apply for user %s: %v", res.User, err)
+			slog.Error("reservation sync: failed to apply for user", "user", res.User, "error", err)
 		}
 	}
 
@@ -141,15 +141,15 @@ func SyncReservations() {
 		activeUsers["user-"+sanitizeK8sName(res.User)] = true
 	}
 	if err := removeStaleReservations(activeUsers); err != nil {
-		log.Printf("reservation sync: failed to remove stale: %v", err)
+		slog.Error("reservation sync: failed to remove stale", "error", err)
 	}
 
 	if err := applyCohortRemaining(reservations); err != nil {
-		log.Printf("reservation sync: failed to update cohort: %v", err)
+		slog.Error("reservation sync: failed to update cohort", "error", err)
 	}
 
 	if len(reservations) > 0 {
-		log.Printf("reservation sync: applied %d user reservations", len(reservations))
+		slog.Info("reservation sync: applied user reservations", "count", len(reservations))
 	}
 }
 
@@ -330,7 +330,7 @@ func applyUserReservation(res userReservation) error {
 		},
 	}
 	if err := k8sApply(fmt.Sprintf("/apis/kueue.x-k8s.io/v1beta1/namespaces/%s/localqueues/reserved", ns), lq); err != nil {
-		log.Printf("reservation sync: failed to apply LocalQueue for %s: %v", ns, err)
+		slog.Error("reservation sync: failed to apply LocalQueue", "namespace", ns, "error", err)
 	}
 
 	for gpuRes, count := range res.Resources {
@@ -397,7 +397,7 @@ func applyUserReservation(res userReservation) error {
 			fmt.Sprintf("/apis/infrastructure.opendatahub.io/v1/namespaces/%s/hardwareprofiles/%s", ns, profileName),
 			hp,
 		); err != nil {
-			log.Printf("reservation sync: failed to apply HardwareProfile %s/%s: %v", ns, profileName, err)
+			slog.Error("reservation sync: failed to apply HardwareProfile", "namespace", ns, "profile", profileName, "error", err)
 		}
 	}
 
@@ -481,7 +481,7 @@ func removeStaleReservations(activeUsers map[string]bool) error {
 		if workloads == 0 {
 			// No workloads — delete immediately
 			deleteUserReservationResources(item.Name)
-			log.Printf("reservation sync: removed stale reservation for %s (no workloads)", item.Name)
+			slog.Info("reservation sync: removed stale reservation", "clusterqueue", item.Name)
 		} else {
 			// Has workloads — initiate graceful drain
 			drainClusterQueue(item.Name)
@@ -526,7 +526,7 @@ func cleanExpiredReservations() error {
 			workloads := getClusterQueueWorkloadCount(item.Name)
 			if workloads == 0 {
 				deleteUserReservationResources(item.Name)
-				log.Printf("reservation cleaner: deleted expired reservation for %s (until=%s)", item.Name, untilStr)
+				slog.Info("reservation cleaner: deleted expired reservation", "clusterqueue", item.Name, "until", untilStr)
 				expired++
 			} else {
 				drainClusterQueue(item.Name)
@@ -538,7 +538,7 @@ func cleanExpiredReservations() error {
 	}
 
 	if expired > 0 || draining > 0 {
-		log.Printf("reservation cleaner: removed %d expired, %d draining, %d active remain", expired, draining, active)
+		slog.Info("reservation cleaner: summary", "expired", expired, "draining", draining, "active", active)
 	}
 
 	return nil
@@ -585,7 +585,7 @@ func drainClusterQueue(ns string) {
 		},
 	}
 	if err := k8sApply("/apis/kueue.x-k8s.io/v1beta1/clusterqueues/"+ns, patch); err != nil {
-		log.Printf("reservation drain: failed to set HoldAndDrain on %s: %v", ns, err)
+		slog.Error("reservation drain: failed to set HoldAndDrain", "clusterqueue", ns, "error", err)
 		return
 	}
 
@@ -599,7 +599,7 @@ func drainClusterQueue(ns string) {
 			if err := k8sDeletePath(fmt.Sprintf(
 				"/apis/infrastructure.opendatahub.io/v1/namespaces/%s/hardwareprofiles/%s", ns, hp.Name,
 			)); err != nil {
-				log.Printf("reservation drain: failed to delete HardwareProfile %s/%s: %v", ns, hp.Name, err)
+				slog.Error("reservation drain: failed to delete HardwareProfile", "namespace", ns, "profile", hp.Name, "error", err)
 			}
 		}
 	}
@@ -607,10 +607,10 @@ func drainClusterQueue(ns string) {
 	if err := k8sDeletePath(fmt.Sprintf(
 		"/apis/kueue.x-k8s.io/v1beta1/namespaces/%s/localqueues/reserved", ns,
 	)); err != nil {
-		log.Printf("reservation drain: failed to delete LocalQueue %s/reserved: %v", ns, err)
+		slog.Error("reservation drain: failed to delete LocalQueue", "namespace", ns, "error", err)
 	}
 
-	log.Printf("reservation drain: initiated HoldAndDrain for %s, workloads draining", ns)
+	slog.Info("reservation drain: initiated HoldAndDrain", "clusterqueue", ns)
 }
 
 // finalizeDrainedClusterQueue checks if a draining CQ is ready to delete.
@@ -622,10 +622,10 @@ func finalizeDrainedClusterQueue(item k8sResourceItem) bool {
 		if err := k8sDeletePath(fmt.Sprintf(
 			"/apis/kueue.x-k8s.io/v1beta1/clusterqueues/%s", item.Name,
 		)); err != nil {
-			log.Printf("reservation drain: failed to delete drained ClusterQueue %s: %v", item.Name, err)
+			slog.Error("reservation drain: failed to delete drained ClusterQueue", "clusterqueue", item.Name, "error", err)
 			return false
 		}
-		log.Printf("reservation drain: deleted drained ClusterQueue %s (all workloads cleared)", item.Name)
+		slog.Info("reservation drain: deleted drained ClusterQueue", "clusterqueue", item.Name)
 		return true
 	}
 
@@ -634,17 +634,17 @@ func finalizeDrainedClusterQueue(item k8sResourceItem) bool {
 	if drainStartStr != "" {
 		drainStart, err := strconv.ParseInt(drainStartStr, 10, 64)
 		if err == nil && time.Now().UTC().Unix()-drainStart > drainTimeoutSeconds {
-			log.Printf("WARNING: reservation drain: force-deleting ClusterQueue %s after drain timeout (%d workloads still active)", item.Name, workloads)
+			slog.Warn("reservation drain: force-deleting ClusterQueue after drain timeout", "clusterqueue", item.Name, "active_workloads", workloads)
 			if err := k8sDeletePath(fmt.Sprintf(
 				"/apis/kueue.x-k8s.io/v1beta1/clusterqueues/%s", item.Name,
 			)); err != nil {
-				log.Printf("reservation drain: failed to force-delete ClusterQueue %s: %v", item.Name, err)
+				slog.Error("reservation drain: failed to force-delete ClusterQueue", "clusterqueue", item.Name, "error", err)
 			}
 			return true
 		}
 	}
 
-	log.Printf("reservation drain: %s still has %d workloads, waiting", item.Name, workloads)
+	slog.Info("reservation drain: waiting for workloads to drain", "clusterqueue", item.Name, "active_workloads", workloads)
 	return false
 }
 
@@ -658,7 +658,7 @@ func deleteUserReservationResources(ns string) {
 			if err := k8sDeletePath(fmt.Sprintf(
 				"/apis/infrastructure.opendatahub.io/v1/namespaces/%s/hardwareprofiles/%s", ns, hp.Name,
 			)); err != nil {
-				log.Printf("reservation cleanup: failed to delete HardwareProfile %s/%s: %v", ns, hp.Name, err)
+				slog.Error("reservation cleanup: failed to delete HardwareProfile", "namespace", ns, "profile", hp.Name, "error", err)
 			}
 		}
 	}
@@ -666,13 +666,13 @@ func deleteUserReservationResources(ns string) {
 	if err := k8sDeletePath(fmt.Sprintf(
 		"/apis/kueue.x-k8s.io/v1beta1/namespaces/%s/localqueues/reserved", ns,
 	)); err != nil {
-		log.Printf("reservation cleanup: failed to delete LocalQueue %s/reserved: %v", ns, err)
+		slog.Error("reservation cleanup: failed to delete LocalQueue", "namespace", ns, "error", err)
 	}
 
 	if err := k8sDeletePath(fmt.Sprintf(
 		"/apis/kueue.x-k8s.io/v1beta1/clusterqueues/%s", ns,
 	)); err != nil {
-		log.Printf("reservation cleanup: failed to delete ClusterQueue %s: %v", ns, err)
+		slog.Error("reservation cleanup: failed to delete ClusterQueue", "clusterqueue", ns, "error", err)
 	}
 }
 
