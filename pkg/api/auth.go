@@ -162,10 +162,10 @@ func AuthMiddleware(next http.Handler) http.Handler {
 			IsAdmin:  isAdmin,
 		}
 
-		// Cache for 60 seconds
+		// Cache for 5 minutes — tokens are long-lived, no need to re-verify frequently
 		authCache.Store(cacheKey, &cachedUser{
 			info:      user,
-			expiresAt: time.Now().Add(60 * time.Second),
+			expiresAt: time.Now().Add(5 * time.Minute),
 		})
 
 		ctx := context.WithValue(r.Context(), userContextKey, user)

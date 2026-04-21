@@ -135,6 +135,11 @@ func OpenDB(dbPath string) error {
 		return fmt.Errorf("creating table: %w", err)
 	}
 
+	// Indexes for query performance
+	db.Exec("CREATE INDEX IF NOT EXISTS idx_bookings_date ON bookings(date)")
+	db.Exec("CREATE INDEX IF NOT EXISTS idx_bookings_resource_date ON bookings(resource, date)")
+	db.Exec("CREATE INDEX IF NOT EXISTS idx_bookings_source ON bookings(source)")
+
 	// Migrations: add columns if missing (existing databases)
 	db.Exec("ALTER TABLE bookings ADD COLUMN source TEXT NOT NULL DEFAULT 'reserved'")
 	db.Exec("ALTER TABLE bookings ADD COLUMN description TEXT NOT NULL DEFAULT ''")
