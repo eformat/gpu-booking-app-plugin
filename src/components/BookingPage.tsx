@@ -282,7 +282,7 @@ const BookingPage: React.FC = () => {
                 <ToolbarItem>
                   <Button
                     variant="secondary"
-                    onClick={() => { setLoading(true); fetchBookings(); }}
+                    onClick={() => fetchBookings()}
                     icon={<SyncIcon />}
                   >
                     Refresh
