@@ -48,6 +48,15 @@ func main() {
 		}
 	}
 
+	// Dev mode (anonymous admin access when outside cluster)
+	api.DevMode = os.Getenv("DEV_MODE") == "true"
+	if api.DevMode {
+		log.Println("==========================================================")
+		log.Println("WARNING: DEV_MODE=true — anonymous admin access is enabled")
+		log.Println("WARNING: DO NOT run with DEV_MODE=true in production")
+		log.Println("==========================================================")
+	}
+
 	// Load GPU config from file (falls back to built-in defaults if not found)
 	gpuConfigPath := os.Getenv("GPU_CONFIG_PATH")
 	if gpuConfigPath == "" {

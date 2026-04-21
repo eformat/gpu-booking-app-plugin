@@ -116,6 +116,8 @@ func AdminExportDatabase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Printf("AUDIT: admin database export requested by user=%q from remote_addr=%s", user.Username, r.RemoteAddr)
+
 	db := database.DB()
 
 	// Flush WAL
@@ -139,6 +141,8 @@ func AdminExportDatabase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Printf("AUDIT: admin database export serving file_size=%d to user=%q", stat.Size(), user.Username)
+
 	w.Header().Set("Content-Disposition", "attachment; filename=bookings.db")
 	w.Header().Set("Content-Type", "application/octet-stream")
 	http.ServeContent(w, r, "bookings.db", stat.ModTime(), f)
@@ -150,6 +154,8 @@ func AdminImportDatabase(w http.ResponseWriter, r *http.Request) {
 		HttpError(w, http.StatusForbidden, "admin_required")
 		return
 	}
+
+	log.Printf("AUDIT: admin database import requested by user=%q from remote_addr=%s", user.Username, r.RemoteAddr)
 
 	r.Body = http.MaxBytesReader(w, r.Body, 100<<20)
 
@@ -212,7 +218,7 @@ func AdminImportDatabase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Println("admin: database imported successfully")
+	log.Printf("AUDIT: admin database imported successfully by user=%q", user.Username)
 	kube.TriggerSyncReservations()
 
 	JsonResponse(w, map[string]string{"status": "imported"})

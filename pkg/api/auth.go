@@ -37,6 +37,10 @@ var (
 	authClient  *kubernetes.Clientset
 	authInitErr error
 	authOnce    sync.Once
+
+	// DevMode must be explicitly set via DEV_MODE=true env var.
+	// When true and authClient is nil, grants anonymous admin access for local development.
+	DevMode bool
 )
 
 func initAuthClient() {
@@ -73,9 +77,8 @@ func AuthMiddleware(next http.Handler) http.Handler {
 
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
-			// If no auth client available, allow anonymous access (dev mode)
-			if authClient == nil {
-				ctx := context.WithValue(r.Context(), userContextKey, &UserInfo{Username: "anonymous", IsAdmin: true})
+			if authClient == nil && DevMode {
+				ctx := context.WithValue(r.Context(), userContextKey, &UserInfo{Username: "dev-admin", IsAdmin: true})
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
@@ -100,8 +103,12 @@ func AuthMiddleware(next http.Handler) http.Handler {
 		}
 
 		if authClient == nil {
-			ctx := context.WithValue(r.Context(), userContextKey, &UserInfo{Username: "anonymous", IsAdmin: true})
-			next.ServeHTTP(w, r.WithContext(ctx))
+			if DevMode {
+				ctx := context.WithValue(r.Context(), userContextKey, &UserInfo{Username: "dev-admin", IsAdmin: true})
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+			HttpError(w, http.StatusUnauthorized, "authorization required")
 			return
 		}
 

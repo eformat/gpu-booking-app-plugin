@@ -41,14 +41,20 @@ metadata:
     app.kubernetes.io/instance: {{ .Release.Name }}
 rules:
   - apiGroups: ["kueue.x-k8s.io"]
-    resources: ["clusterqueues", "localqueues", "cohorts"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    resources: ["clusterqueues"]
+    verbs: ["get", "list", "create", "patch", "delete"]
+  - apiGroups: ["kueue.x-k8s.io"]
+    resources: ["localqueues"]
+    verbs: ["list", "create", "patch", "delete"]
+  - apiGroups: ["kueue.x-k8s.io"]
+    resources: ["cohorts"]
+    verbs: ["create", "patch"]
   - apiGroups: ["infrastructure.opendatahub.io"]
     resources: ["hardwareprofiles"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["list", "create", "patch", "delete"]
   - apiGroups: [""]
     resources: ["namespaces"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
