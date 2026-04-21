@@ -17,7 +17,11 @@ func GetBookings(w http.ResponseWriter, r *http.Request) {
 	user := GetUser(r)
 	db := database.DB()
 
-	rows, err := db.QueryContext(ctx, "SELECT "+database.BookingColumns+" FROM bookings ORDER BY date, slot_type")
+	startDate := time.Now().AddDate(0, 0, -7).Format("2006-01-02")
+	endDate := time.Now().AddDate(0, 0, BookingWindowDays+1).Format("2006-01-02")
+	rows, err := db.QueryContext(ctx,
+		"SELECT "+database.BookingColumns+" FROM bookings WHERE date >= ? AND date < ? ORDER BY date, slot_type",
+		startDate, endDate)
 	if err != nil {
 		HttpError(w, http.StatusInternalServerError, "database_error")
 		slog.Error("failed to query bookings", "error", err)
