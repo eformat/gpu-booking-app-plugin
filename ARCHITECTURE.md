@@ -182,7 +182,7 @@ All Kueue resources share a single flat Cohort. User reservations carve out prot
 
 When a user has an active reservation, three Kubernetes resources are created:
 
-1. **ClusterQueue** (`user-<username>`) - joins the `unreserved` cohort, scoped to the user's namespace. Holds the reserved `nominalQuota` for CPU, memory, and GPU resources. Labeled with `rhai-tmm.dev/until` for expiry tracking.
+1. **ClusterQueue** (`user-<username>`) - joins the `unreserved` cohort, scoped to the user's namespace. Holds the reserved `nominalQuota` for CPU, memory, and GPU resources. Labeled with `rhai-tmm.dev/until` for expiry tracking. On expiry, the ClusterQueue is gracefully drained via `stopPolicy: HoldAndDrain` before deletion (see Expiration Cleaner below).
 
 2. **LocalQueue** (`reserved`) - lives in the `user-<username>` namespace and points to the user's ClusterQueue. This is the queue users submit workloads to.
 
@@ -285,12 +285,24 @@ Materializes Kueue resources (ClusterQueue, LocalQueue, HardwareProfile) for tod
 
 **File:** `pkg/kube/reservations.go`
 
-Cleans up expired Kueue resources:
+Cleans up expired Kueue resources using a graceful two-phase drain process, following the [Kueue ClusterQueue deletion procedure](https://kueue.sigs.k8s.io/docs/tasks/troubleshooting/troubleshooting_delete_clusterqueue):
 
 - Lists all ClusterQueues with the `rhai-tmm.dev/until` label
-- Deletes expired ClusterQueues, their associated LocalQueues, and HardwareProfiles
-- Re-syncs the Cohort `nominalQuota` after cleanup
 - Also removes resources for users who no longer have active bookings (`removeStaleReservations`)
+
+**Phase 1 — Drain:** When a ClusterQueue expires or becomes stale and has active workloads:
+- Sets `spec.stopPolicy: HoldAndDrain` on the ClusterQueue (stops new admissions, evicts admitted workloads)
+- Adds labels `rhai-tmm.dev/draining: "true"` and `rhai-tmm.dev/drain-start: <unix-timestamp>`
+- Immediately deletes the associated LocalQueue and HardwareProfiles (prevents new workload submissions)
+
+**Phase 2 — Delete:** On subsequent cleaner cycles, draining ClusterQueues are checked:
+- If `admittedWorkloads + pendingWorkloads + reservingWorkloads == 0` → ClusterQueue is deleted
+- If the drain timeout (30 minutes) has elapsed → ClusterQueue is force-deleted with a warning log
+- Otherwise, the queue remains in draining state until the next cycle
+
+If the ClusterQueue has **no active workloads** at expiry time, it is deleted immediately (skipping the drain phase).
+
+The Cohort `nominalQuota` is re-synced after cleanup.
 
 ### Async Sync Triggers
 
@@ -342,11 +354,13 @@ The plugin's ServiceAccount requires:
 
 | API Group | Resources | Verbs |
 |-----------|-----------|-------|
-| `kueue.x-k8s.io` | `localqueues`, `clusterqueues`, `cohorts` | get, list, watch, create, update, patch, delete |
-| `""` (core) | `namespaces` | get, list, watch, create |
+| `kueue.x-k8s.io` | `clusterqueues`, `clusterqueues/status` | get, list, create, patch, delete |
+| `kueue.x-k8s.io` | `localqueues` | list, create, patch, delete |
+| `kueue.x-k8s.io` | `cohorts` | create, patch |
+| `""` (core) | `namespaces` | get |
 | `authentication.k8s.io` | `tokenreviews` | create |
 | `authorization.k8s.io` | `subjectaccessreviews` | create |
-| `infrastructure.opendatahub.io` | `hardwareprofiles` | get, list, watch, create, update, patch, delete |
+| `infrastructure.opendatahub.io` | `hardwareprofiles` | list, create, patch, delete |
 
 Admin access for users is controlled by a separate ClusterRole that grants the `admin` verb on `gpubooking.openshift.io/bookings`. This custom RBAC rule is checked via SubjectAccessReview and is not included in the standard OpenShift `admin` ClusterRole, so project owners do not automatically get booking admin access.
 

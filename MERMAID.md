@@ -171,18 +171,32 @@ flowchart TD
   subgraph clean_loop[Expiration Cleaner - every 10min]
     direction TB
     c1[List ClusterQueues with\nrhai-tmm.dev/until label]
-    c2{Until timestamp\npast current time?}
-    c3[Delete ClusterQueue]
-    c4[Delete LocalQueue]
-    c5[Delete HardwareProfiles]
-    c6[Re-sync Cohort\nnominalQuota]
+    c2{Already\ndraining?}
+    c3{Until timestamp\npast current time?}
+    c4{Active\nworkloads?}
+    c5[Phase 1: HoldAndDrain\nSet stopPolicy\nAdd draining labels]
+    c6[Delete LocalQueue\nDelete HardwareProfiles]
+    c7{Active\nworkloads?}
+    c8[Delete ClusterQueue]
+    c9[Skip - retry\nnext cycle]
+    c10{Drain\ntimeout?}
+    c11[Force-delete\nClusterQueue\nwith warning]
+    c12[Re-sync Cohort\nnominalQuota]
 
     c1 --> c2
-    c2 -->|Yes| c3
-    c2 -->|No| c1
-    c3 --> c4
-    c4 --> c5
+    c2 -->|Yes| c7
+    c2 -->|No| c3
+    c3 -->|Yes| c4
+    c3 -->|No| c1
+    c4 -->|No| c8
+    c4 -->|Yes| c5
     c5 --> c6
+    c7 -->|No| c8
+    c7 -->|Yes| c10
+    c10 -->|Yes >30min| c11
+    c10 -->|No| c9
+    c8 --> c12
+    c11 --> c12
   end
 
   db[(SQLite DB\nbookings.db)]

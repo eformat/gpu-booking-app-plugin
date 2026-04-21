@@ -41,7 +41,7 @@ metadata:
     app.kubernetes.io/instance: {{ .Release.Name }}
 rules:
   - apiGroups: ["kueue.x-k8s.io"]
-    resources: ["clusterqueues"]
+    resources: ["clusterqueues", "clusterqueues/status"]
     verbs: ["get", "list", "create", "patch", "delete"]
   - apiGroups: ["kueue.x-k8s.io"]
     resources: ["localqueues"]

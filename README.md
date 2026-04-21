@@ -147,6 +147,7 @@ When Kueue sync is enabled, the plugin:
 2. When users reserve slots, consumed bookings are evicted and per-user ClusterQueues are created with protected quotas
 3. Kueue's `reclaimWithinCohort` preemption ensures reserved workloads take priority over unreserved ones
 4. HardwareProfiles are created in user namespaces for OpenDataHub/RHOAI workbench scheduling
+5. When reservations expire, ClusterQueues are gracefully drained (`stopPolicy: HoldAndDrain`) before deletion, giving active workloads time to complete
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full quota flow, preemption model, and sync lifecycle.
 

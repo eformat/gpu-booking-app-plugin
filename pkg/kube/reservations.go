@@ -17,7 +17,10 @@ import (
 	"github.com/eformat/gpu-booking-plugin/pkg/database"
 )
 
-const reservationCleanInterval = 10 * time.Minute
+const (
+	reservationCleanInterval = 10 * time.Minute
+	drainTimeoutSeconds      = 30 * 60 // 30 minutes: force-delete CQ if drain exceeds this
+)
 
 // sanitizeK8sName converts a username (e.g. "cluster-admin@redhat.com") into a
 // valid Kubernetes resource name by stripping the @domain suffix and replacing
@@ -466,8 +469,23 @@ func removeStaleReservations(activeUsers map[string]bool) error {
 		if activeUsers[item.Name] {
 			continue
 		}
-		deleteUserReservationResources(item.Name)
-		log.Printf("reservation sync: removed stale reservation for %s", item.Name)
+
+		// Already draining — check if ready to finalize
+		if item.Labels["rhai-tmm.dev/draining"] == "true" {
+			finalizeDrainedClusterQueue(item)
+			continue
+		}
+
+		// Phase 1: initiate drain
+		workloads := getClusterQueueWorkloadCount(item.Name)
+		if workloads == 0 {
+			// No workloads — delete immediately
+			deleteUserReservationResources(item.Name)
+			log.Printf("reservation sync: removed stale reservation for %s (no workloads)", item.Name)
+		} else {
+			// Has workloads — initiate graceful drain
+			drainClusterQueue(item.Name)
+		}
 	}
 
 	return nil
@@ -484,8 +502,18 @@ func cleanExpiredReservations() error {
 		return fmt.Errorf("listing labeled ClusterQueues: %w", err)
 	}
 
-	var expired, active int
+	var expired, active, draining int
 	for _, item := range items {
+		// Already draining — check if ready to finalize
+		if item.Labels["rhai-tmm.dev/draining"] == "true" {
+			if finalizeDrainedClusterQueue(item) {
+				expired++
+			} else {
+				draining++
+			}
+			continue
+		}
+
 		untilStr, ok := item.Labels["rhai-tmm.dev/until"]
 		if !ok {
 			continue
@@ -495,19 +523,129 @@ func cleanExpiredReservations() error {
 			continue
 		}
 		if until < now {
-			deleteUserReservationResources(item.Name)
-			log.Printf("reservation cleaner: deleted expired reservation for %s (until=%s)", item.Name, untilStr)
-			expired++
+			workloads := getClusterQueueWorkloadCount(item.Name)
+			if workloads == 0 {
+				deleteUserReservationResources(item.Name)
+				log.Printf("reservation cleaner: deleted expired reservation for %s (until=%s)", item.Name, untilStr)
+				expired++
+			} else {
+				drainClusterQueue(item.Name)
+				draining++
+			}
 		} else {
 			active++
 		}
 	}
 
-	if expired > 0 {
-		log.Printf("reservation cleaner: removed %d expired, %d active remain", expired, active)
+	if expired > 0 || draining > 0 {
+		log.Printf("reservation cleaner: removed %d expired, %d draining, %d active remain", expired, draining, active)
 	}
 
 	return nil
+}
+
+// getClusterQueueWorkloadCount returns the number of admitted + pending workloads
+// on a ClusterQueue by reading its status. Returns 0 if the CQ doesn't exist.
+func getClusterQueueWorkloadCount(name string) int {
+	body, err := K8sGet(fmt.Sprintf("/apis/kueue.x-k8s.io/v1beta1/clusterqueues/%s", name))
+	if err != nil {
+		return 0
+	}
+	var cq struct {
+		Status struct {
+			AdmittedWorkloads  int `json:"admittedWorkloads"`
+			PendingWorkloads   int `json:"pendingWorkloads"`
+			ReservingWorkloads int `json:"reservingWorkloads"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal(body, &cq); err != nil {
+		return 0
+	}
+	return cq.Status.AdmittedWorkloads + cq.Status.PendingWorkloads + cq.Status.ReservingWorkloads
+}
+
+// drainClusterQueue sets stopPolicy=HoldAndDrain and adds draining labels,
+// then deletes the LocalQueue and HardwareProfiles to prevent new submissions.
+func drainClusterQueue(ns string) {
+	nowStr := strconv.FormatInt(time.Now().UTC().Unix(), 10)
+
+	// Patch the CQ to HoldAndDrain with draining labels
+	patch := map[string]any{
+		"apiVersion": "kueue.x-k8s.io/v1beta1",
+		"kind":       "ClusterQueue",
+		"metadata": map[string]any{
+			"name": ns,
+			"labels": map[string]string{
+				"rhai-tmm.dev/draining":    "true",
+				"rhai-tmm.dev/drain-start": nowStr,
+			},
+		},
+		"spec": map[string]any{
+			"stopPolicy": "HoldAndDrain",
+		},
+	}
+	if err := k8sApply("/apis/kueue.x-k8s.io/v1beta1/clusterqueues/"+ns, patch); err != nil {
+		log.Printf("reservation drain: failed to set HoldAndDrain on %s: %v", ns, err)
+		return
+	}
+
+	// Delete LocalQueue and HardwareProfiles immediately to block new submissions
+	hpItems, err := k8sListWithLabel(
+		fmt.Sprintf("/apis/infrastructure.opendatahub.io/v1/namespaces/%s/hardwareprofiles", ns),
+		"rhai-tmm.dev/until",
+	)
+	if err == nil {
+		for _, hp := range hpItems {
+			if err := k8sDeletePath(fmt.Sprintf(
+				"/apis/infrastructure.opendatahub.io/v1/namespaces/%s/hardwareprofiles/%s", ns, hp.Name,
+			)); err != nil {
+				log.Printf("reservation drain: failed to delete HardwareProfile %s/%s: %v", ns, hp.Name, err)
+			}
+		}
+	}
+
+	if err := k8sDeletePath(fmt.Sprintf(
+		"/apis/kueue.x-k8s.io/v1beta1/namespaces/%s/localqueues/reserved", ns,
+	)); err != nil {
+		log.Printf("reservation drain: failed to delete LocalQueue %s/reserved: %v", ns, err)
+	}
+
+	log.Printf("reservation drain: initiated HoldAndDrain for %s, workloads draining", ns)
+}
+
+// finalizeDrainedClusterQueue checks if a draining CQ is ready to delete.
+// Returns true if the CQ was deleted (or force-deleted due to timeout).
+func finalizeDrainedClusterQueue(item k8sResourceItem) bool {
+	workloads := getClusterQueueWorkloadCount(item.Name)
+
+	if workloads == 0 {
+		if err := k8sDeletePath(fmt.Sprintf(
+			"/apis/kueue.x-k8s.io/v1beta1/clusterqueues/%s", item.Name,
+		)); err != nil {
+			log.Printf("reservation drain: failed to delete drained ClusterQueue %s: %v", item.Name, err)
+			return false
+		}
+		log.Printf("reservation drain: deleted drained ClusterQueue %s (all workloads cleared)", item.Name)
+		return true
+	}
+
+	// Check drain timeout
+	drainStartStr := item.Labels["rhai-tmm.dev/drain-start"]
+	if drainStartStr != "" {
+		drainStart, err := strconv.ParseInt(drainStartStr, 10, 64)
+		if err == nil && time.Now().UTC().Unix()-drainStart > drainTimeoutSeconds {
+			log.Printf("WARNING: reservation drain: force-deleting ClusterQueue %s after drain timeout (%d workloads still active)", item.Name, workloads)
+			if err := k8sDeletePath(fmt.Sprintf(
+				"/apis/kueue.x-k8s.io/v1beta1/clusterqueues/%s", item.Name,
+			)); err != nil {
+				log.Printf("reservation drain: failed to force-delete ClusterQueue %s: %v", item.Name, err)
+			}
+			return true
+		}
+	}
+
+	log.Printf("reservation drain: %s still has %d workloads, waiting", item.Name, workloads)
+	return false
 }
 
 func deleteUserReservationResources(ns string) {
