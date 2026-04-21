@@ -110,7 +110,7 @@ func AdminDeleteBooking(w http.ResponseWriter, r *http.Request) {
 	db := database.DB()
 	id := r.URL.Query().Get("id")
 
-	// Delete all bookings when no id
+	// Delete all bookings when no id (admin bulk delete)
 	if id == "" {
 		result, err := db.ExecContext(ctx, "DELETE FROM bookings")
 		if err != nil {
@@ -121,6 +121,11 @@ func AdminDeleteBooking(w http.ResponseWriter, r *http.Request) {
 		slog.Info("AUDIT: admin delete all bookings", "user", user.Username, "deleted_count", rows, "remote_addr", r.RemoteAddr)
 		JsonResponse(w, map[string]any{"status": "deleted", "count": rows})
 		kube.TriggerSyncReservations()
+		return
+	}
+
+	if !IsValidBookingID(id) {
+		HttpError(w, http.StatusBadRequest, "invalid_id")
 		return
 	}
 

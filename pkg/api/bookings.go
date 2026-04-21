@@ -93,8 +93,8 @@ func CreateBooking(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate date format
-	if _, err := time.Parse("2006-01-02", req.Date); err != nil {
+	// Validate date format and bounds
+	if !IsValidBookingDate(req.Date, BookingWindowDays) {
 		HttpError(w, http.StatusBadRequest, "invalid_date")
 		return
 	}
@@ -192,6 +192,10 @@ func DeleteBooking(w http.ResponseWriter, r *http.Request) {
 		HttpError(w, http.StatusBadRequest, "missing_id")
 		return
 	}
+	if !IsValidBookingID(id) {
+		HttpError(w, http.StatusBadRequest, "invalid_id")
+		return
+	}
 
 	user := GetUser(r)
 	db := database.DB()
@@ -239,6 +243,12 @@ func BulkCancelHandler(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.IDs) == 0 {
 		HttpError(w, http.StatusBadRequest, "invalid_request")
 		return
+	}
+	for _, id := range req.IDs {
+		if !IsValidBookingID(id) {
+			HttpError(w, http.StatusBadRequest, "invalid_id")
+			return
+		}
 	}
 
 	tx, err := db.BeginTx(ctx, nil)

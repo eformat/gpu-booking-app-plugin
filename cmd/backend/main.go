@@ -91,8 +91,9 @@ func main() {
 	// Router
 	r := mux.NewRouter()
 
-	// API routes with auth middleware
+	// API routes with rate limiting + auth middleware
 	apiRouter := r.PathPrefix("/api").Subrouter()
+	apiRouter.Use(api.RateLimitMiddleware)
 	apiRouter.Use(api.AuthMiddleware)
 
 	// Auth
@@ -115,11 +116,18 @@ func main() {
 	apiRouter.HandleFunc("/admin/database/export", api.AdminExportDatabase).Methods("GET")
 	apiRouter.HandleFunc("/admin/database/import", api.AdminImportDatabase).Methods("POST")
 
-	// Health
+	// Health (with DB liveness check)
 	apiRouter.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		ns := os.Getenv("POD_NAMESPACE")
 		if ns == "" {
 			ns = "default"
+		}
+		if err := database.DB().PingContext(r.Context()); err != nil {
+			slog.Error("health check: database ping failed", "error", err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprintf(w, `{"status":"error","error":"database_unavailable","namespace":"%s"}`, ns)
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"status":"ok","namespace":"%s"}`, ns)
