@@ -21,6 +21,7 @@ import {
   ModalBody,
   ModalFooter,
   FileUpload,
+  Pagination,
   Split,
   SplitItem,
 } from '@patternfly/react-core';
@@ -64,10 +65,13 @@ const AdminPage: React.FC = () => {
   const [gpuResources, setGpuResources] = React.useState<GPUResource[]>(FALLBACK_GPU_RESOURCES);
   const [selectedResources, setSelectedResources] = React.useState<string[]>([]);
   const [sourceFilter, setSourceFilter] = React.useState<'all' | 'reserved' | 'consumed'>('all');
+  const [page, setPage] = React.useState(1);
+  const [perPage, setPerPage] = React.useState(100);
 
   const fetchData = React.useCallback(async () => {
     try {
-      const result = await adminGetBookings();
+      const offset = (page - 1) * perPage;
+      const result = await adminGetBookings(perPage, offset);
       setData(result);
       if (result.config?.resources?.length > 0) {
         setGpuResources(result.config.resources);
@@ -77,7 +81,7 @@ const AdminPage: React.FC = () => {
       setError(e instanceof Error ? e.message : 'Failed to load admin data');
     }
     setLoading(false);
-  }, []);
+  }, [page, perPage]);
 
   React.useEffect(() => {
     if (!authLoading && isAdmin) {
@@ -307,7 +311,7 @@ const AdminPage: React.FC = () => {
               </ToolbarItem>
               <ToolbarItem>
                 <span style={{ fontSize: '14px', color: 'var(--pf-t--global--text--color--regular)', opacity: 0.7 }}>
-                  {sorted.length} of {bookings.length} bookings
+                  {sorted.length} of {bookings.length} bookings (page {page}, {data?.total ?? 0} total)
                 </span>
               </ToolbarItem>
             </ToolbarContent>
@@ -367,6 +371,21 @@ const AdminPage: React.FC = () => {
               ))}
             </Tbody>
           </Table>
+
+          <Pagination
+            itemCount={data?.total ?? 0}
+            perPage={perPage}
+            page={page}
+            onSetPage={(_e, p) => setPage(p)}
+            onPerPageSelect={(_e, pp) => { setPerPage(pp); setPage(1); }}
+            perPageOptions={[
+              { title: '20', value: 20 },
+              { title: '50', value: 50 },
+              { title: '100', value: 100 },
+              { title: '200', value: 200 },
+            ]}
+            style={{ marginTop: '16px' }}
+          />
         </PageSection>
 
         {/* Delete All confirmation modal */}

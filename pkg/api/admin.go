@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 
 	"github.com/eformat/gpu-booking-plugin/pkg/database"
 	"github.com/eformat/gpu-booking-plugin/pkg/kube"
@@ -20,7 +21,33 @@ func AdminListBookings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	db := database.DB()
-	rows, err := db.QueryContext(ctx, "SELECT "+database.BookingColumns+" FROM bookings ORDER BY date, slot_type")
+
+	// Pagination: limit (default 100, max 1000) and offset (default 0)
+	limit := 100
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	offset := 0
+	if v := r.URL.Query().Get("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+
+	// Get total count
+	var total int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM bookings").Scan(&total); err != nil {
+		HttpError(w, http.StatusInternalServerError, "database_error")
+		return
+	}
+
+	rows, err := db.QueryContext(ctx, "SELECT "+database.BookingColumns+" FROM bookings ORDER BY date, slot_type LIMIT ? OFFSET ?", limit, offset)
 	if err != nil {
 		HttpError(w, http.StatusInternalServerError, "database_error")
 		return
@@ -42,6 +69,9 @@ func AdminListBookings(w http.ResponseWriter, r *http.Request) {
 
 	JsonResponse(w, map[string]any{
 		"bookings":               bookings,
+		"total":                  total,
+		"limit":                  limit,
+		"offset":                 offset,
 		"config":                 database.GetConfig(BookingWindowDays),
 		"totalSlots":             40,
 		"reservationSyncEnabled": kube.ReservationSyncEnabled,

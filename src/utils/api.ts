@@ -97,12 +97,16 @@ export const bulkCancelBookings = (ids: string[]) =>
 // Admin
 export interface AdminResponse {
   bookings: Booking[];
+  total: number;
+  limit: number;
+  offset: number;
   config: ConfigResponse;
   totalSlots: number;
   reservationSyncEnabled: boolean;
 }
 
-export const adminGetBookings = () => request<AdminResponse>('/admin');
+export const adminGetBookings = (limit = 100, offset = 0) =>
+  request<AdminResponse>(`/admin?limit=${limit}&offset=${offset}`);
 
 export const adminDeleteBooking = (id: string) =>
   request<{ status: string }>(`/admin?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
