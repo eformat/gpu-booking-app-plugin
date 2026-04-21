@@ -103,7 +103,7 @@ cmd/
 pkg/
 ├── api/
 │   ├── main.go             # HTTP router, static file serving, middleware
-│   ├── auth.go             # TokenReview + SubjectAccessReview, 60s cache
+│   ├── auth.go             # TokenReview + SubjectAccessReview, 5m cache
 │   ├── bookings.go         # GET/POST/DELETE bookings, bulk booking
 │   ├── admin.go            # Admin list, delete, DB export/import
 │   ├── config.go           # GPU specs, booking window, cluster capacity
@@ -122,7 +122,7 @@ The console's `UserToken` proxy forwards the logged-in user's Bearer token to th
 1. Extracts the Bearer token from the `Authorization` header
 2. Validates via Kubernetes `TokenReview` API → extracts `username` and `groups`
 3. Checks admin status via `SubjectAccessReview` for `gpubooking.openshift.io/bookings` with verb `admin`
-4. Caches results for 60 seconds keyed by SHA256 token hash
+4. Caches results for 5 minutes keyed by SHA256 token hash
 5. Injects `username`, `groups`, and `is_admin` into the request context
 
 **Important:** Console impersonation does NOT affect plugin proxy calls. The `UserToken` proxy always sends the logged-in user's actual token. Impersonation headers (`Impersonate-User`) are only forwarded for direct Kubernetes API calls.
