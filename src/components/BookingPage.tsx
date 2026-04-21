@@ -65,6 +65,21 @@ const BookingPage: React.FC = () => {
   const selectedResourceObjects = gpuResources.filter((r) => selectedResources.includes(r.type));
   const gridDates = React.useMemo(() => [...selectedDates].sort(), [selectedDates]);
 
+  // When resource selection changes while "My Bookings" is active, re-filter dates
+  React.useEffect(() => {
+    if (!showingMyBookings || !currentUser) return;
+    const myBookings = bookings.filter(
+      (b) => b.user === currentUser && b.source === 'reserved' && selectedResources.includes(b.resource),
+    );
+    const myDates = Array.from(new Set(myBookings.map((b) => b.date))).sort();
+    if (myDates.length === 0) {
+      setShowingMyBookings(false);
+      setSelectedDates([todayStr()]);
+      return;
+    }
+    setSelectedDates(myDates);
+  }, [selectedResources, showingMyBookings, currentUser, bookings]);
+
   React.useEffect(() => {
     if (!contextMenu) return;
     const close = () => setContextMenu(null);
