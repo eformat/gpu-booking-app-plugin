@@ -105,8 +105,21 @@ export interface AdminResponse {
   reservationSyncEnabled: boolean;
 }
 
-export const adminGetBookings = (limit = 100, offset = 0) =>
-  request<AdminResponse>(`/admin?limit=${limit}&offset=${offset}`);
+export const adminGetBookings = (params: {
+  limit?: number;
+  offset?: number;
+  source?: string;
+  resource?: string;
+  search?: string;
+} = {}) => {
+  const q = new URLSearchParams();
+  q.set('limit', String(params.limit ?? 100));
+  q.set('offset', String(params.offset ?? 0));
+  if (params.source) q.set('source', params.source);
+  if (params.resource) q.set('resource', params.resource);
+  if (params.search) q.set('search', params.search);
+  return request<AdminResponse>(`/admin?${q.toString()}`);
+};
 
 export const adminDeleteBooking = (id: string) =>
   request<{ status: string }>(`/admin?id=${encodeURIComponent(id)}`, { method: 'DELETE' });

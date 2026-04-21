@@ -68,10 +68,20 @@ const AdminPage: React.FC = () => {
   const [page, setPage] = React.useState(1);
   const [perPage, setPerPage] = React.useState(100);
 
+  // Only pass a single resource to the server filter when exactly one is selected
+  const serverResource = selectedResources.length === 1 ? selectedResources[0] : '';
+  const serverSource = sourceFilter !== 'all' ? sourceFilter : '';
+
   const fetchData = React.useCallback(async () => {
     try {
       const offset = (page - 1) * perPage;
-      const result = await adminGetBookings(perPage, offset);
+      const result = await adminGetBookings({
+        limit: perPage,
+        offset,
+        source: serverSource || undefined,
+        resource: serverResource || undefined,
+        search: filter || undefined,
+      });
       setData(result);
       if (result.config?.resources?.length > 0) {
         setGpuResources(result.config.resources);
@@ -81,7 +91,7 @@ const AdminPage: React.FC = () => {
       setError(e instanceof Error ? e.message : 'Failed to load admin data');
     }
     setLoading(false);
-  }, [page, perPage]);
+  }, [page, perPage, serverSource, serverResource, filter]);
 
   React.useEffect(() => {
     if (!authLoading && isAdmin) {
@@ -154,19 +164,10 @@ const AdminPage: React.FC = () => {
 
   const bookings = data?.bookings || [];
 
-  // Filter
+  // Client-side filter only for multi-resource selection (single resource is server-side)
   const filtered = bookings.filter((b) => {
-    if (selectedResources.length > 0 && !selectedResources.includes(b.resource)) return false;
-    if (sourceFilter !== 'all' && b.source !== sourceFilter) return false;
-    if (!filter) return true;
-    const q = filter.toLowerCase();
-    return (
-      b.user.toLowerCase().includes(q) ||
-      b.date.includes(q) ||
-      b.resource.toLowerCase().includes(q) ||
-      b.source.toLowerCase().includes(q) ||
-      (b.description || '').toLowerCase().includes(q)
-    );
+    if (selectedResources.length > 1 && !selectedResources.includes(b.resource)) return false;
+    return true;
   });
 
   // Sort
@@ -265,7 +266,7 @@ const AdminPage: React.FC = () => {
             <ResourceSelector
               resources={gpuResources}
               selectedResources={selectedResources}
-              onSelectionChange={setSelectedResources}
+              onSelectionChange={(res) => { setSelectedResources(res); setPage(1); }}
             />
           </div>
 
@@ -277,16 +278,10 @@ const AdminPage: React.FC = () => {
                 key={s}
                 variant={sourceFilter === s ? 'primary' : 'secondary'}
                 size="sm"
-                onClick={() => setSourceFilter(s)}
+                onClick={() => { setSourceFilter(s); setPage(1); }}
                 style={sourceFilter === s && s === 'consumed' ? { backgroundColor: '#0066CC' } : undefined}
               >
                 {s === 'all' ? 'All' : s === 'reserved' ? 'Reserved' : 'Consumed'}
-                {' '}
-                <Label isCompact style={{ marginLeft: '4px' }}>
-                  {s === 'all'
-                    ? bookings.length
-                    : bookings.filter((b) => b.source === s).length}
-                </Label>
               </Button>
             ))}
           </div>
@@ -300,7 +295,7 @@ const AdminPage: React.FC = () => {
                   aria-label="Filter bookings"
                   placeholder="Filter by user, date, resource..."
                   value={filter}
-                  onChange={(_e, val) => setFilter(val)}
+                  onChange={(_e, val) => { setFilter(val); setPage(1); }}
                   style={{ minWidth: '300px' }}
                 />
               </ToolbarItem>
@@ -311,7 +306,7 @@ const AdminPage: React.FC = () => {
               </ToolbarItem>
               <ToolbarItem>
                 <span style={{ fontSize: '14px', color: 'var(--pf-t--global--text--color--regular)', opacity: 0.7 }}>
-                  {sorted.length} of {bookings.length} bookings (page {page}, {data?.total ?? 0} total)
+                  {sorted.length} of {data?.total ?? 0} bookings
                 </span>
               </ToolbarItem>
             </ToolbarContent>

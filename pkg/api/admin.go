@@ -40,14 +40,35 @@ func AdminListBookings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Get total count
+	// Server-side filters
+	where := "WHERE 1=1"
+	args := []any{}
+
+	if source := r.URL.Query().Get("source"); source != "" {
+		where += " AND source = ?"
+		args = append(args, source)
+	}
+	if resource := r.URL.Query().Get("resource"); resource != "" {
+		where += " AND resource = ?"
+		args = append(args, resource)
+	}
+	if search := r.URL.Query().Get("search"); search != "" {
+		where += " AND (user LIKE ? OR date LIKE ? OR resource LIKE ? OR source LIKE ? OR description LIKE ?)"
+		q := "%" + search + "%"
+		args = append(args, q, q, q, q, q)
+	}
+
+	// Get total count (with filters)
 	var total int
-	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM bookings").Scan(&total); err != nil {
+	countArgs := make([]any, len(args))
+	copy(countArgs, args)
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM bookings "+where, countArgs...).Scan(&total); err != nil {
 		HttpError(w, http.StatusInternalServerError, "database_error")
 		return
 	}
 
-	rows, err := db.QueryContext(ctx, "SELECT "+database.BookingColumns+" FROM bookings ORDER BY date, slot_type LIMIT ? OFFSET ?", limit, offset)
+	queryArgs := append(args, limit, offset)
+	rows, err := db.QueryContext(ctx, "SELECT "+database.BookingColumns+" FROM bookings "+where+" ORDER BY date, slot_type LIMIT ? OFFSET ?", queryArgs...)
 	if err != nil {
 		HttpError(w, http.StatusInternalServerError, "database_error")
 		return
