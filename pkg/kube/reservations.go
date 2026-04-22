@@ -502,6 +502,23 @@ func cleanExpiredReservations() error {
 		return fmt.Errorf("listing labeled ClusterQueues: %w", err)
 	}
 
+	// Also find draining CQs that may have lost their until label
+	drainingItems, err := k8sListWithLabel(
+		"/apis/kueue.x-k8s.io/v1beta1/clusterqueues",
+		"rhai-tmm.dev/draining",
+	)
+	if err == nil {
+		seen := map[string]bool{}
+		for _, item := range items {
+			seen[item.Name] = true
+		}
+		for _, item := range drainingItems {
+			if !seen[item.Name] {
+				items = append(items, item)
+			}
+		}
+	}
+
 	var expired, active, draining int
 	for _, item := range items {
 		// Already draining — check if ready to finalize
@@ -569,16 +586,31 @@ func getClusterQueueWorkloadCount(name string) int {
 func drainClusterQueue(ns string) {
 	nowStr := strconv.FormatInt(time.Now().UTC().Unix(), 10)
 
-	// Patch the CQ to HoldAndDrain with draining labels
+	labels := map[string]string{
+		"rhai-tmm.dev/draining":    "true",
+		"rhai-tmm.dev/drain-start": nowStr,
+	}
+	// Preserve the until label so cleanExpiredReservations can still find this CQ
+	body, err := K8sGet(fmt.Sprintf("/apis/kueue.x-k8s.io/v1beta1/clusterqueues/%s", ns))
+	if err == nil {
+		var existing struct {
+			Metadata struct {
+				Labels map[string]string `json:"labels"`
+			} `json:"metadata"`
+		}
+		if json.Unmarshal(body, &existing) == nil {
+			if v, ok := existing.Metadata.Labels["rhai-tmm.dev/until"]; ok {
+				labels["rhai-tmm.dev/until"] = v
+			}
+		}
+	}
+
 	patch := map[string]any{
 		"apiVersion": "kueue.x-k8s.io/v1beta1",
 		"kind":       "ClusterQueue",
 		"metadata": map[string]any{
-			"name": ns,
-			"labels": map[string]string{
-				"rhai-tmm.dev/draining":    "true",
-				"rhai-tmm.dev/drain-start": nowStr,
-			},
+			"name":   ns,
+			"labels": labels,
 		},
 		"spec": map[string]any{
 			"stopPolicy": "HoldAndDrain",
