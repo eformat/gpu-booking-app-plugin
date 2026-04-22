@@ -157,13 +157,13 @@ func getActiveReservations() ([]userReservation, error) {
 	db := database.DB()
 	now := time.Now().UTC()
 	today := now.Format("2006-01-02")
-	tomorrow := now.Add(24 * time.Hour).Format("2006-01-02")
+	currentHour := now.Hour()
 
 	rows, err := db.Query(
 		`SELECT user, resource, COUNT(DISTINCT slot_index) as unit_count, MAX(end_hour) as max_end_hour, MAX(date) as max_date
-		 FROM bookings WHERE date IN (?, ?) AND source = ?
+		 FROM bookings WHERE date = ? AND source = ? AND start_hour <= ? AND end_hour > ?
 		 GROUP BY user, resource`,
-		today, tomorrow, database.SourceReserved,
+		today, database.SourceReserved, currentHour, currentHour,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("querying reservations: %w", err)
