@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	reservationCleanInterval = 10 * time.Minute
+	reservationCleanInterval = 2 * time.Minute
 	drainTimeoutSeconds      = 30 * 60 // 30 minutes: force-delete CQ if drain exceeds this
 )
 
@@ -102,7 +102,7 @@ func InitReservationSync() {
 		slog.Info("reservation sync: not running in-cluster, disabling")
 		return
 	}
-	slog.Info("reservation sync: enabled", "cleaner_interval", "10m")
+	slog.Info("reservation sync: enabled", "cleaner_interval", "2m")
 	go reservationCleanerLoop()
 }
 
