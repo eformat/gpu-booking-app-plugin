@@ -465,6 +465,86 @@ func syncBookings(usages []resourceUsage, dates []string) error {
 	return nil
 }
 
+// PreemptedWorkload represents a Kueue Workload that has been preempted.
+type PreemptedWorkload struct {
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+	Owner     string `json:"owner"`
+	Reason    string `json:"reason"`
+	Message   string `json:"message"`
+	Timestamp string `json:"timestamp"`
+}
+
+// ListPreemptedWorkloads queries the Kueue Workloads API and returns any
+// workloads that have a Preempted or Evicted (reason=Preempted) condition.
+func ListPreemptedWorkloads() ([]PreemptedWorkload, error) {
+	if k8sHost == "" || k8sToken == "" {
+		return nil, nil
+	}
+
+	body, err := K8sGet("/apis/kueue.x-k8s.io/v1beta1/workloads")
+	if err != nil {
+		return nil, fmt.Errorf("listing workloads: %w", err)
+	}
+
+	var list struct {
+		Items []struct {
+			Metadata struct {
+				Name      string `json:"name"`
+				Namespace string `json:"namespace"`
+			} `json:"metadata"`
+			Spec struct {
+				PodSets []struct {
+					Template struct {
+						Spec struct {
+							ServiceAccountName string `json:"serviceAccountName"`
+						} `json:"spec"`
+					} `json:"template"`
+				} `json:"podSets"`
+			} `json:"spec"`
+			Status struct {
+				Conditions []struct {
+					Type               string `json:"type"`
+					Status             string `json:"status"`
+					Reason             string `json:"reason"`
+					Message            string `json:"message"`
+					LastTransitionTime string `json:"lastTransitionTime"`
+				} `json:"conditions"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(body, &list); err != nil {
+		return nil, fmt.Errorf("parsing workload list: %w", err)
+	}
+
+	var result []PreemptedWorkload
+	for _, item := range list.Items {
+		for _, cond := range item.Status.Conditions {
+			if cond.Status != "True" {
+				continue
+			}
+			if cond.Type == "Preempted" || (cond.Type == "Evicted" && cond.Reason == "Preempted") {
+				owner := item.Metadata.Namespace
+				if user, err := getNamespaceRequester(item.Metadata.Namespace); err == nil && user != "" {
+					owner = user
+				}
+
+				result = append(result, PreemptedWorkload{
+					Name:      item.Metadata.Name,
+					Namespace: item.Metadata.Namespace,
+					Owner:     owner,
+					Reason:    cond.Reason,
+					Message:   cond.Message,
+					Timestamp: cond.LastTransitionTime,
+				})
+				break
+			}
+		}
+	}
+
+	return result, nil
+}
+
 func kueueBookingID(namespace, resource string, slotIndex int, date string) string {
 	parts := strings.Split(resource, "/")
 	short := parts[len(parts)-1]

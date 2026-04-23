@@ -27,17 +27,19 @@ import {
   Booking,
   todayStr,
 } from '../utils/constants';
-import { useBookings, useConfig, useClock } from '../utils/hooks';
+import { useBookings, useConfig, useClock, usePreemptedWorkloads } from '../utils/hooks';
 import ResourceSelector from './ResourceSelector';
 import CalendarGrid from './CalendarGrid';
 import GpuUsagePanel from './GpuUsagePanel';
 import BookingGrid from './BookingGrid';
 import BookingModal from './BookingModal';
+import PreemptionBanner from './PreemptionBanner';
 
 const BookingPage: React.FC = () => {
   useAuth();
   const { bookings, activeReservations, currentUser, loading: bookingsLoading, fetchBookings } = useBookings();
   const { gpuResources, bookingWindowDays } = useConfig();
+  const { preemptedWorkloads } = usePreemptedWorkloads();
   const utcNow = useClock();
 
   const [loading, setLoading] = React.useState(true);
@@ -327,6 +329,8 @@ const BookingPage: React.FC = () => {
             resources={gpuResources}
             selectedDate={selectedDates[0] || todayStr()}
           />
+
+          <PreemptionBanner workloads={preemptedWorkloads} />
 
           <CalendarGrid
             viewYear={viewYear}

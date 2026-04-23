@@ -109,6 +109,9 @@ func main() {
 	apiRouter.HandleFunc("/bookings/bulk", api.BulkBookingHandler).Methods("POST")
 	apiRouter.HandleFunc("/bookings/bulk/cancel", api.BulkCancelHandler).Methods("DELETE")
 
+	// Workloads
+	apiRouter.HandleFunc("/workloads/preempted", api.PreemptedWorkloadsHandler).Methods("GET")
+
 	// Admin
 	apiRouter.HandleFunc("/admin", api.AdminListBookings).Methods("GET")
 	apiRouter.HandleFunc("/admin", api.AdminDeleteBooking).Methods("DELETE")

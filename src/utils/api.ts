@@ -163,6 +163,22 @@ export async function adminImportDatabase(file: File): Promise<{ status: string 
   return resp.json();
 }
 
+// Preempted workloads
+export interface PreemptedWorkload {
+  name: string;
+  namespace: string;
+  owner: string;
+  reason: string;
+  message: string;
+  timestamp: string;
+}
+
+export interface PreemptedWorkloadsResponse {
+  workloads: PreemptedWorkload[];
+}
+
+export const getPreemptedWorkloads = () => request<PreemptedWorkloadsResponse>('/workloads/preempted');
+
 // Health
 export const getHealth = () =>
   request<{ status: string; namespace: string }>('/health');

@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { Booking, GPUResource, FALLBACK_GPU_RESOURCES, DEFAULT_BOOKING_WINDOW_DAYS } from './constants';
-import { getBookings, getConfig } from './api';
+import { getBookings, getConfig, getPreemptedWorkloads, PreemptedWorkload } from './api';
 
 export interface BookingsState {
   bookings: Booking[];
@@ -60,6 +60,31 @@ export function useConfig(): ConfigState {
   }, []);
 
   return { gpuResources, bookingWindowDays };
+}
+
+export interface PreemptedWorkloadsState {
+  preemptedWorkloads: PreemptedWorkload[];
+}
+
+export function usePreemptedWorkloads(): PreemptedWorkloadsState {
+  const [preemptedWorkloads, setPreemptedWorkloads] = React.useState<PreemptedWorkload[]>([]);
+
+  const fetchPreempted = React.useCallback(async () => {
+    try {
+      const result = await getPreemptedWorkloads();
+      setPreemptedWorkloads(result.workloads || []);
+    } catch {
+      // silently ignore — cluster may not have Kueue installed
+    }
+  }, []);
+
+  React.useEffect(() => {
+    fetchPreempted();
+    const interval = setInterval(fetchPreempted, 30000);
+    return () => clearInterval(interval);
+  }, [fetchPreempted]);
+
+  return { preemptedWorkloads };
 }
 
 export function useClock(): string {
