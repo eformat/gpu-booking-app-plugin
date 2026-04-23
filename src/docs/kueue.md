@@ -88,6 +88,41 @@ Each sync cycle:
 
 ---
 
+## Preempted Workloads
+
+When a reserved booking displaces a consumed booking, Kueue may preempt the affected workload. The booking page shows a collapsible **preempted workloads** banner between the GPU Usage Overview and the calendar whenever preemptions are active.
+
+### What the banner shows
+
+The banner displays a warning icon with a count (e.g. "2 preempted workloads"). Click to expand and see details for each preempted workload:
+
+| Field | Description |
+|-------|-------------|
+| **Reason** | The preemption reason label (e.g. `Preempted`, `InClusterQueue`) |
+| **Owner** | The user whose workload was preempted (resolved from namespace labels) |
+| **Namespace/Name** | The Kubernetes namespace and Workload object name |
+| **Message** | The full preemption message from Kueue, including the UID of the workload that triggered the preemption |
+| **Timestamp** | When the preemption occurred |
+
+### How preemption conditions work
+
+Kueue adds two conditions to a preempted Workload's `.status.conditions`:
+
+- **Evicted** (reason: `Preempted`) -- indicates the workload was evicted due to preemption
+- **Preempted** (reason: `InClusterQueue`) -- provides details about why the preemption occurred
+
+The banner polls for preempted workloads every 30 seconds and hides automatically when there are none.
+
+### What to do about preempted workloads
+
+A preempted workload is re-queued by Kueue and will resume when resources become available. If you see your own workloads listed:
+
+- Check whether you still need the preempted workload to run
+- Wait for resources to free up, or adjust your resource requests
+- Contact the user who made the reservation if urgent
+
+---
+
 ## Next Steps
 
 - [Making Bookings](making-bookings) -- how to override consumed bookings

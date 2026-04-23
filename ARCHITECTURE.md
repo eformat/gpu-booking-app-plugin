@@ -75,6 +75,7 @@ The frontend is a React application using PatternFly v6 components, bundled via 
 | `CalendarGrid.tsx` | Interactive month calendar with booking density indicators and date multi-select |
 | `ResourceSelector.tsx` | Card gallery for GPU resource type selection (H200, MIG 3g, 2g, 1g) with GPU equivalent weights |
 | `GpuUsagePanel.tsx` | Real-time usage bar chart showing consumed/reserved/free slots per resource type with hover-to-reveal usernames |
+| `PreemptionBanner.tsx` | Collapsible banner showing preempted Kueue workloads with owner, reason, message, and timestamp. Hidden when none |
 | `AdminPage.tsx` | Admin: view all bookings, delete bookings, toggle Kueue sync, export/import database |
 | `HelpPage.tsx` | Markdown-based help with sidebar navigation, 8 topic pages, prev/next pagination |
 
@@ -136,6 +137,7 @@ GET    /api/bookings                 → all bookings + active reservations + cu
 POST   /api/bookings                 → create single booking (conflict resolution)
 DELETE /api/bookings?id=             → cancel booking (owner or admin only)
 POST   /api/bookings/bulk            → create multi-day bookings (date range + resource counts)
+GET    /api/workloads/preempted      → list Kueue workloads with Preempted/Evicted conditions
 GET    /api/admin                    → all bookings (admin only)
 DELETE /api/admin?id=                → delete booking (admin only)
 POST   /api/admin/reservations       → toggle Kueue sync (admin only)
@@ -356,6 +358,7 @@ The plugin's ServiceAccount requires:
 |-----------|-----------|-------|
 | `kueue.x-k8s.io` | `clusterqueues`, `clusterqueues/status` | get, list, create, patch, delete |
 | `kueue.x-k8s.io` | `localqueues` | list, create, patch, delete |
+| `kueue.x-k8s.io` | `workloads` | list |
 | `kueue.x-k8s.io` | `cohorts` | create, patch |
 | `""` (core) | `namespaces` | get |
 | `authentication.k8s.io` | `tokenreviews` | create |
@@ -390,7 +393,8 @@ Markdown files are imported as strings via webpack `asset/source` rule and rende
 | `pkg/api/auth.go` | TokenReview + SubjectAccessReview auth |
 | `pkg/api/bookings.go` | Booking CRUD, conflict resolution, bulk booking |
 | `pkg/database/database.go` | SQLite schema, queries, WAL mode |
-| `pkg/kube/kueue.go` | Kueue LocalQueue sync → consumed bookings |
+| `pkg/api/workloads.go` | Preempted workloads API handler |
+| `pkg/kube/kueue.go` | Kueue LocalQueue sync → consumed bookings, preempted workload queries |
 | `pkg/kube/reservations.go` | K8s resource sync (CQ/LQ/HardwareProfile), username sanitization |
 | `src/components/BookingPage.tsx` | Main booking UI |
 | `src/components/BookingGrid.tsx` | Per-resource slot grid |

@@ -126,7 +126,7 @@ Reserved bookings always take priority over consumed bookings. This is useful wh
 
 <div class="alert alert-info">
   <strong>How preemption works</strong>
-  <p>Your reservation reduces the Cohort's available quota. Kueue will preempt the lowest-priority borrowing workload to honour your reservation. The workload will be re-queued and can resume when resources become available.</p>
+  <p>Your reservation reduces the Cohort's available quota. Kueue will preempt the lowest-priority borrowing workload to honour your reservation. The workload will be re-queued and can resume when resources become available. Any preempted workloads will appear in the collapsible banner below the GPU Usage Overview.</p>
 </div>
 
 ---

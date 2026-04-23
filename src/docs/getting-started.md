@@ -61,7 +61,8 @@ Below the header you will find:
 
 1. **Mini calendar** -- month view with navigation, today indicator, and GPU usage badges
 2. **GPU Usage Overview** -- visual bar chart of resource utilisation for the selected day
-3. **Booking grid(s)** -- detailed table of all slots with Reserve/Cancel/Edit buttons, one grid per selected resource type
+3. **Preempted Workloads** -- collapsible banner showing any workloads that have been preempted by Kueue (hidden when none)
+4. **Booking grid(s)** -- detailed table of all slots with Reserve/Cancel/Edit buttons, one grid per selected resource type
 
 ![images/main-content.png](images/main-content.png)
 

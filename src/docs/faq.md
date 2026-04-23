@@ -86,6 +86,10 @@ Yes. Click the amber **Override** button to replace the consumed booking with yo
 
 It may. When you override, Kueue reduces the shared pool quota and may preempt the lowest-priority borrowing workload. The job will be re-queued and can restart when resources free up.
 
+### How do I see which workloads have been preempted?
+
+A collapsible banner appears between the GPU Usage Overview and the calendar whenever any workloads have been preempted. Click it to expand and see the owner, workload name, preemption reason, and timestamp for each one. It updates every 30 seconds and hides when there are no preempted workloads. See [Kueue & Auto-Bookings](kueue) for more details.
+
 ### Why do consumed bookings keep reappearing after an admin deletes them?
 
 The sync process runs every 60 seconds. If the underlying workload is still active, the booking will be recreated. To permanently remove it, the workload itself needs to be stopped.
