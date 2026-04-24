@@ -1,8 +1,6 @@
 # GPU Booking Console Plugin
 
 [![Tests](https://github.com/eformat/gpu-booking-app-plugin/actions/workflows/test.yaml/badge.svg)](https://github.com/eformat/gpu-booking-app-plugin/actions/workflows/test.yaml)
-![Go Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/eformat/COVERAGE_GIST_ID/raw/go-coverage.json)
-![Frontend Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/eformat/COVERAGE_GIST_ID/raw/frontend-coverage.json)
 
 An OpenShift Console Dynamic Plugin for booking and managing shared GPU resources with [Kueue](https://kueue.sigs.k8s.io/) integration. Users reserve GPU time slots through an interactive calendar interface embedded directly in the OpenShift console, and the system automatically manages Kueue ClusterQueue quotas to enforce reservation priority via workload preemption.
 
