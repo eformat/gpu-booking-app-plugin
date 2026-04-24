@@ -1,0 +1,130 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test-go:
+    name: Go Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Install SQLite dev libraries
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+
+      - name: Run tests with coverage
+        run: go test -coverprofile=coverage.out -covermode=atomic ./pkg/api/... ./pkg/database/...
+
+      - name: Generate coverage report
+        run: go tool cover -func=coverage.out | tail -1
+
+      - name: Upload Go coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage
+          path: coverage.out
+
+  test-frontend:
+    name: Frontend Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'yarn'
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Run tests with coverage
+        run: yarn test -- --coverage
+
+      - name: Upload frontend coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage
+          path: coverage/
+
+  coverage-badge:
+    name: Coverage Badge
+    needs: [test-go, test-frontend]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Install SQLite dev libraries
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+
+      - name: Download Go coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: go-coverage
+
+      - name: Extract Go coverage percentage
+        id: go-cov
+        run: |
+          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | tr -d '%')
+          echo "percentage=$COVERAGE" >> $GITHUB_OUTPUT
+
+      - name: Download frontend coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-coverage
+          path: coverage/
+
+      - name: Extract frontend coverage percentage
+        id: fe-cov
+        run: |
+          COVERAGE=$(cat coverage/coverage-summary.json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['total']['lines']['pct'])" 2>/dev/null || echo "0")
+          echo "percentage=$COVERAGE" >> $GITHUB_OUTPUT
+
+      - name: Compute combined coverage
+        id: combined
+        run: |
+          GO=${{ steps.go-cov.outputs.percentage }}
+          FE=${{ steps.fe-cov.outputs.percentage }}
+          COMBINED=$(python3 -c "print(round(($GO + $FE) / 2, 1))")
+          echo "percentage=$COMBINED" >> $GITHUB_OUTPUT
+          if (( $(echo "$COMBINED >= 80" | bc -l) )); then
+            echo "color=brightgreen" >> $GITHUB_OUTPUT
+          elif (( $(echo "$COMBINED >= 60" | bc -l) )); then
+            echo "color=yellow" >> $GITHUB_OUTPUT
+          else
+            echo "color=red" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Go badge
+        uses: schneegans/dynamic-badges-action@v1.7.0
+        with:
+          auth: ${{ secrets.GIST_TOKEN }}
+          gistID: ${{ vars.COVERAGE_GIST_ID }}
+          filename: go-coverage.json
+          label: Go coverage
+          message: ${{ steps.go-cov.outputs.percentage }}%
+          color: ${{ steps.combined.outputs.color }}
+
+      - name: Create frontend badge
+        uses: schneegans/dynamic-badges-action@v1.7.0
+        with:
+          auth: ${{ secrets.GIST_TOKEN }}
+          gistID: ${{ vars.COVERAGE_GIST_ID }}
+          filename: frontend-coverage.json
+          label: Frontend coverage
+          message: ${{ steps.fe-cov.outputs.percentage }}%
+          color: ${{ steps.combined.outputs.color }}
