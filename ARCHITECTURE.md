@@ -384,6 +384,52 @@ The plugin includes a built-in help system with 8 markdown documentation pages:
 
 Markdown files are imported as strings via webpack `asset/source` rule and rendered at runtime with `react-markdown`, `remark-gfm`, and `rehype-raw`. Images are imported as webpack assets and resolved via an `imageMap` registry.
 
+## Testing
+
+The project has unit tests for both backend and frontend. All test commands are available via Makefile targets.
+
+### Running Tests
+
+| Command | Description |
+|---------|-------------|
+| `make test` | Run all Go + frontend tests |
+| `make test-go` | Run Go tests only |
+| `make test-frontend` | Run frontend tests only (`vitest`) |
+| `make coverage` | Run all tests with coverage reports |
+| `make coverage-go` | Go coverage → `coverage-go/coverage.html` |
+| `make coverage-frontend` | Frontend coverage → `coverage/index.html` |
+
+### Backend (Go)
+
+Tests use the standard `testing` package with `net/http/httptest` for handler tests and temporary SQLite databases for isolation. Each handler test creates a fresh database via `t.TempDir()` and injects user context to simulate authenticated requests without requiring a Kubernetes cluster.
+
+Test files:
+
+| File | Covers |
+|------|--------|
+| `pkg/api/validate_test.go` | Booking ID and date validation |
+| `pkg/api/helpers_test.go` | JSON response helpers |
+| `pkg/api/bookings_test.go` | Booking CRUD, conflict resolution, bulk operations, consumed eviction |
+| `pkg/api/admin_test.go` | Admin list/delete/toggle, pagination, filters, DB export/import |
+| `pkg/api/auth_test.go` | User context extraction, MeHandler, AuthMiddleware (DevMode, cache, health bypass) |
+| `pkg/api/config_test.go` | Config endpoint |
+| `pkg/api/ratelimit_test.go` | Per-IP rate limiting and burst behavior |
+| `pkg/database/database_test.go` | Init, schema, CRUD, unique constraints, config loading |
+
+**Note:** `pkg/kube/` is not unit-tested as it requires a live Kubernetes cluster with Kueue installed.
+
+### Frontend (TypeScript)
+
+Tests use [Vitest](https://vitest.dev/) with `@testing-library/react-hooks` for hook tests and `vi.mock`/`vi.fn` for API mocking.
+
+Test files:
+
+| File | Covers |
+|------|--------|
+| `src/utils/constants.test.ts` | Date formatting, weekend detection, month/date range utilities, GPU equivalent calculations |
+| `src/utils/api.test.ts` | All API client functions with mocked `fetch`, CSRF token handling, error responses |
+| `src/utils/hooks.test.ts` | `useBookings`, `useConfig`, `usePreemptedWorkloads`, `useClock` — mount, polling, cleanup, error handling |
+
 ## Key Files
 
 | File | Purpose |

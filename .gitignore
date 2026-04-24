@@ -3,3 +3,5 @@ dist/
 *.db
 .env
 .playwright-cli/
+coverage/
+coverage-go/

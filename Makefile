@@ -1,3 +1,25 @@
+# Run all tests (Go + Frontend)
+test: test-go test-frontend
+
+test-go:
+	go test ./...
+
+test-frontend:
+	yarn test
+
+# Run all tests with coverage
+coverage: coverage-go coverage-frontend
+
+coverage-go:
+	@mkdir -p coverage-go
+	go test -coverprofile=coverage-go/coverage.out ./pkg/api/... ./pkg/database/...
+	go tool cover -func=coverage-go/coverage.out
+	go tool cover -html=coverage-go/coverage.out -o coverage-go/coverage.html
+	@echo "HTML report: coverage-go/coverage.html"
+
+coverage-frontend:
+	yarn test -- --coverage
+
 # Image URL to use all building/pushing image targets
 REGISTRY ?= quay.io
 REPOSITORY ?= $(REGISTRY)/eformat/gpu-booking-plugin
