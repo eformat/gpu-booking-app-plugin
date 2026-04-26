@@ -142,7 +142,7 @@ const AdminPage: React.FC = () => {
     }
   };
 
-  if (authLoading || loading) {
+  if (authLoading) {
     return (
       <Bullseye>
         <Spinner size="xl" />
@@ -159,6 +159,14 @@ const AdminPage: React.FC = () => {
           </Alert>
         </PageSection>
       </>
+    );
+  }
+
+  if (loading) {
+    return (
+      <Bullseye>
+        <Spinner size="xl" />
+      </Bullseye>
     );
   }
 
