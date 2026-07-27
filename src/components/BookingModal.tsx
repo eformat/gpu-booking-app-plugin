@@ -105,8 +105,8 @@ const BookingModal: React.FC<BookingModalProps> = ({
 
   const totalResources = Object.values(resources).reduce((s, c) => s + c, 0);
   const isFullDay = startHourLocal === 0 && endHourLocal === 24;
-  const startHourUtc = ((startHourLocal - Math.round(utcOffset)) % 24 + 24) % 24;
-  const endHourUtc = endHourLocal === 24 ? 24 : ((endHourLocal - Math.round(utcOffset)) % 24 + 24) % 24;
+  const startHourUtc = ((startHourLocal - utcOffset) % 24 + 24) % 24;
+  const endHourUtc = endHourLocal === 24 ? 24 : ((endHourLocal - utcOffset) % 24 + 24) % 24;
 
   const gpuEquivMap: Record<string, number> = {};
   for (const r of gpuResources) gpuEquivMap[r.type] = r.gpuEquivalent;
@@ -121,7 +121,7 @@ const BookingModal: React.FC<BookingModalProps> = ({
     setSubmitting(true);
     setError(null);
     try {
-      await onSubmit(resources, start, end, description, startHourLocal, endHourLocal, Math.round(utcOffset));
+      await onSubmit(resources, start, end, description, startHourLocal, endHourLocal, utcOffset);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to create bookings');
       setSubmitting(false);

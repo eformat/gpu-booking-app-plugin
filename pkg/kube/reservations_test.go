@@ -17,7 +17,7 @@ func setupTestDB(t *testing.T) {
 	t.Cleanup(database.Close)
 }
 
-func insertBooking(t *testing.T, id, user, resource string, slotIndex int, date string, startHour, endHour, utcOffset int) {
+func insertBooking(t *testing.T, id, user, resource string, slotIndex int, date string, startHour, endHour int, utcOffset float64) {
 	t.Helper()
 	db := database.DB()
 	_, err := db.Exec(
@@ -281,5 +281,51 @@ func TestActiveReservations_Empty(t *testing.T) {
 	}
 	if len(res) != 0 {
 		t.Errorf("expected 0 reservations, got %d", len(res))
+	}
+}
+
+func TestActiveReservations_IST_HalfHourOffset(t *testing.T) {
+	setupTestDB(t)
+
+	// IST user (UTC+5.5) books "2026-05-04" full day (local hours 0-24).
+	// UTC active window: May 3 18:30 UTC to May 4 18:30 UTC.
+	insertBooking(t, "b1", "priya", "nvidia.com/gpu", 0, "2026-05-04", 0, 24, 5.5)
+
+	// At May 3 22:00 UTC (= May 4 03:30 IST) — should be active.
+	now := time.Date(2026, 5, 3, 22, 0, 0, 0, time.UTC)
+	res, err := getActiveReservationsAt(now)
+	if err != nil {
+		t.Fatalf("getActiveReservationsAt: %v", err)
+	}
+	if len(res) != 1 {
+		t.Fatalf("IST booking should be active at May 3 22:00 UTC, got %d reservations", len(res))
+	}
+	if res[0].User != "priya" {
+		t.Errorf("user = %q, want priya", res[0].User)
+	}
+
+	// At May 3 18:00 UTC (30 minutes before UTC window opens) — should NOT be active.
+	now = time.Date(2026, 5, 3, 18, 0, 0, 0, time.UTC)
+	res, err = getActiveReservationsAt(now)
+	if err != nil {
+		t.Fatalf("getActiveReservationsAt: %v", err)
+	}
+	if len(res) != 0 {
+		t.Errorf("IST booking should NOT be active at May 3 18:00 UTC (before 18:30 start), got %d", len(res))
+	}
+
+	// Verify Until timestamp = May 4 18:30 UTC.
+	now = time.Date(2026, 5, 4, 10, 0, 0, 0, time.UTC)
+	res, err = getActiveReservationsAt(now)
+	if err != nil {
+		t.Fatalf("getActiveReservationsAt: %v", err)
+	}
+	if len(res) != 1 {
+		t.Fatalf("expected 1 reservation, got %d", len(res))
+	}
+	expectedUntil := time.Date(2026, 5, 4, 18, 30, 0, 0, time.UTC).Unix()
+	if res[0].Until != expectedUntil {
+		t.Errorf("until = %d (%s), want %d (May 4 18:30 UTC)",
+			res[0].Until, time.Unix(res[0].Until, 0).UTC(), expectedUntil)
 	}
 }

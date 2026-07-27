@@ -53,8 +53,8 @@ func GetBookings(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		utcStart := base.Add(time.Duration(b.StartHour-b.UtcOffset) * time.Hour)
-		utcEnd := base.Add(time.Duration(b.EndHour-b.UtcOffset) * time.Hour)
+		utcStart := base.Add(time.Duration((float64(b.StartHour) - b.UtcOffset) * float64(time.Hour)))
+		utcEnd := base.Add(time.Duration((float64(b.EndHour) - b.UtcOffset) * float64(time.Hour)))
 		if !now.Before(utcStart) && now.Before(utcEnd) {
 			if _, ok := activeRes[b.User]; !ok {
 				activeRes[b.User] = "user-" + b.User
@@ -80,9 +80,9 @@ func CreateBooking(w http.ResponseWriter, r *http.Request) {
 		Date        string `json:"date"`
 		SlotType    string `json:"slotType"`
 		Description string `json:"description"`
-		StartHour   int    `json:"startHour"`
-		EndHour     int    `json:"endHour"`
-		UtcOffset   int    `json:"utcOffset"`
+		StartHour   int     `json:"startHour"`
+		EndHour     int     `json:"endHour"`
+		UtcOffset   float64 `json:"utcOffset"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		HttpError(w, http.StatusBadRequest, "invalid_request")
@@ -339,7 +339,7 @@ func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 		Description string         `json:"description"`
 		StartHour   int            `json:"startHour"`
 		EndHour     int            `json:"endHour"`
-		UtcOffset   int            `json:"utcOffset"`
+		UtcOffset   float64        `json:"utcOffset"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		HttpError(w, http.StatusBadRequest, "invalid_request")

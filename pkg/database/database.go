@@ -25,7 +25,7 @@ type Booking struct {
 	Description string `json:"description"`
 	StartHour   int    `json:"startHour"`
 	EndHour     int    `json:"endHour"`
-	UtcOffset   int    `json:"utcOffset"`
+	UtcOffset   float64 `json:"utcOffset"`
 }
 
 type GPUResourceSpec struct {
@@ -147,7 +147,7 @@ func OpenDB(dbPath string) error {
 			description TEXT NOT NULL DEFAULT '',
 			start_hour INTEGER NOT NULL DEFAULT 0,
 			end_hour INTEGER NOT NULL DEFAULT 24,
-			utc_offset INTEGER NOT NULL DEFAULT 0,
+			utc_offset REAL NOT NULL DEFAULT 0,
 			UNIQUE(resource, slot_index, date, slot_type)
 		)
 	`)
@@ -165,7 +165,7 @@ func OpenDB(dbPath string) error {
 	db.Exec("ALTER TABLE bookings ADD COLUMN description TEXT NOT NULL DEFAULT ''")
 	db.Exec("ALTER TABLE bookings ADD COLUMN start_hour INTEGER NOT NULL DEFAULT 0")
 	db.Exec("ALTER TABLE bookings ADD COLUMN end_hour INTEGER NOT NULL DEFAULT 24")
-	db.Exec("ALTER TABLE bookings ADD COLUMN utc_offset INTEGER NOT NULL DEFAULT 0")
+	db.Exec("ALTER TABLE bookings ADD COLUMN utc_offset REAL NOT NULL DEFAULT 0")
 
 	return nil
 }

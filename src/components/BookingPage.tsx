@@ -113,7 +113,7 @@ const BookingPage: React.FC = () => {
     setReservingKey(key);
     setError(null);
     try {
-      await apiCreateBooking({ resource, slotIndex, date, slotType, startHour: 0, endHour: 24, utcOffset: Math.round(getUtcOffsetHours(date)) });
+      await apiCreateBooking({ resource, slotIndex, date, slotType, startHour: 0, endHour: 24, utcOffset: getUtcOffsetHours(date) });
       await fetchBookings();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to reserve');

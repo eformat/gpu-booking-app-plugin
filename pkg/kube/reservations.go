@@ -176,7 +176,8 @@ func getActiveReservationsAt(now time.Time) ([]userReservation, error) {
 	userMaxUtcEnd := map[string]time.Time{}
 	for rows.Next() {
 		var user, resource, date string
-		var slotIndex, startHour, endHour, utcOffset int
+		var slotIndex, startHour, endHour int
+		var utcOffset float64
 		if err := rows.Scan(&user, &resource, &slotIndex, &date, &startHour, &endHour, &utcOffset); err != nil {
 			continue
 		}
@@ -188,8 +189,8 @@ func getActiveReservationsAt(now time.Time) ([]userReservation, error) {
 		if err != nil {
 			continue
 		}
-		utcStart := base.Add(time.Duration(startHour-utcOffset) * time.Hour)
-		utcEnd := base.Add(time.Duration(endHour-utcOffset) * time.Hour)
+		utcStart := base.Add(time.Duration((float64(startHour) - utcOffset) * float64(time.Hour)))
+		utcEnd := base.Add(time.Duration((float64(endHour) - utcOffset) * float64(time.Hour)))
 
 		if now.Before(utcStart) || !now.Before(utcEnd) {
 			continue

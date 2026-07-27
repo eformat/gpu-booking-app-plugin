@@ -832,3 +832,61 @@ func TestBulkBookingHandlerInvalidResource(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
 }
+
+func TestCreateBookingHalfHourOffset(t *testing.T) {
+	setupTestDB(t)
+
+	// IST user (UTC+5.5) sends utcOffset: 5.5 — previously Math.round truncated this to 6.
+	// Verify the float offset is accepted, stored, and returned correctly.
+	date := time.Now().AddDate(0, 0, 1).Format("2006-01-02")
+	body := `{"resource":"nvidia.com/gpu","slotIndex":0,"date":"` + date + `","slotType":"full","startHour":0,"endHour":24,"utcOffset":5.5}`
+
+	req := httptest.NewRequest(http.MethodPost, "/bookings", strings.NewReader(body))
+	req = reqWithUser(req, testUser())
+	w := httptest.NewRecorder()
+
+	CreateBooking(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body = %s", w.Code, http.StatusCreated, w.Body.String())
+	}
+
+	var b database.Booking
+	if err := json.NewDecoder(w.Body).Decode(&b); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if b.UtcOffset != 5.5 {
+		t.Errorf("UtcOffset = %v, want 5.5", b.UtcOffset)
+	}
+}
+
+func TestBulkBookingHalfHourOffset(t *testing.T) {
+	setupTestDB(t)
+
+	// Nepal (UTC+5.75) bulk booking with fractional offset.
+	start := time.Now().AddDate(0, 0, 1).Format("2006-01-02")
+	body := `{"resources":{"nvidia.com/gpu":1},"startDate":"` + start + `","endDate":"` + start + `","startHour":0,"endHour":24,"utcOffset":5.75}`
+
+	req := httptest.NewRequest(http.MethodPost, "/bookings/bulk", strings.NewReader(body))
+	req = reqWithUser(req, testUser())
+	w := httptest.NewRecorder()
+
+	BulkBookingHandler(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body = %s", w.Code, http.StatusCreated, w.Body.String())
+	}
+
+	var resp struct {
+		Bookings []database.Booking `json:"bookings"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Bookings) == 0 {
+		t.Fatal("expected at least one booking")
+	}
+	if resp.Bookings[0].UtcOffset != 5.75 {
+		t.Errorf("UtcOffset = %v, want 5.75", resp.Bookings[0].UtcOffset)
+	}
+}
