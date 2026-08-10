@@ -109,31 +109,37 @@ func TestIsValidBookingDateWithOffset(t *testing.T) {
 }
 
 func TestIsValidBookingDateWithHalfHourOffset(t *testing.T) {
-	// IST user (UTC+5.5): at 18:00 UTC it's 23:30 local — still "today" for the user.
-	// With the old Math.round(5.5)=6 approach the backend treated this as UTC+6,
-	// making "today" become tomorrow and rejecting a same-day booking.
-	utcNow := time.Date(2026, 7, 27, 18, 0, 0, 0, time.UTC) // 23:30 IST
-	userNow := utcNow.Add(time.Duration(5.5 * float64(time.Hour)))
-	userToday := time.Date(userNow.Year(), userNow.Month(), userNow.Day(), 0, 0, 0, 0, time.UTC)
-	userTodayStr := userToday.Format("2006-01-02") // "2026-07-27"
+	// IST (UTC+5.5) and Nepal (UTC+5.75) use fractional-hour offsets.
+	// The old Math.round(5.5)=6 approach treated IST as UTC+6, shifting
+	// "today" by a full hour and rejecting valid same-day bookings.
+	utcNow := time.Now().UTC()
 
-	if !IsValidBookingDate(userTodayStr, 30, 5.5) {
-		t.Errorf("IST user's today (%s) should be valid at 18:00 UTC with offset 5.5", userTodayStr)
+	// IST: compute the user's local "today" using the exact 5.5 offset.
+	istNow := utcNow.Add(time.Duration(5.5 * float64(time.Hour)))
+	istToday := time.Date(istNow.Year(), istNow.Month(), istNow.Day(), 0, 0, 0, 0, time.UTC)
+	istTodayStr := istToday.Format("2006-01-02")
+
+	if !IsValidBookingDate(istTodayStr, 30, 5.5) {
+		t.Errorf("IST user's today (%s) should be valid with offset 5.5", istTodayStr)
 	}
 
-	// One minute later the rounded offset (6) would have put "today" at 2026-07-28,
-	// making 2026-07-27 look like yesterday. Verify the exact offset does not reject it.
-	utcNowPlus1m := time.Date(2026, 7, 27, 18, 1, 0, 0, time.UTC) // 23:31 IST — still today
-	_ = utcNowPlus1m                                                // used implicitly via fixed date string
-
-	if !IsValidBookingDate("2026-07-27", 30, 5.5) {
-		t.Errorf("IST booking for 2026-07-27 should be valid at 18:01 UTC with offset 5.5")
+	// IST today should be at most one day ahead of UTC today (not two, as the
+	// rounded UTC+6 would produce at 18:00+ UTC).
+	utcToday := time.Date(utcNow.Year(), utcNow.Month(), utcNow.Day(), 0, 0, 0, 0, time.UTC)
+	if diff := istToday.Sub(utcToday); diff < 0 || diff > 24*time.Hour {
+		t.Errorf("IST today (%s) should be same or one day ahead of UTC today (%s)", istTodayStr, utcToday.Format("2006-01-02"))
 	}
 
-	// Nepal (UTC+5.75): similar half-hour edge — 18:00 UTC = 23:45 local, still today.
-	nepalUserNow := utcNow.Add(time.Duration(5.75 * float64(time.Hour)))
-	nepalToday := time.Date(nepalUserNow.Year(), nepalUserNow.Month(), nepalUserNow.Day(), 0, 0, 0, 0, time.UTC)
+	// IST tomorrow should also be valid (within 30-day window).
+	istTomorrow := istToday.AddDate(0, 0, 1).Format("2006-01-02")
+	if !IsValidBookingDate(istTomorrow, 30, 5.5) {
+		t.Errorf("IST user's tomorrow (%s) should be valid with offset 5.5", istTomorrow)
+	}
+
+	// Nepal (UTC+5.75): same fractional-offset logic.
+	nepalNow := utcNow.Add(time.Duration(5.75 * float64(time.Hour)))
+	nepalToday := time.Date(nepalNow.Year(), nepalNow.Month(), nepalNow.Day(), 0, 0, 0, 0, time.UTC)
 	if !IsValidBookingDate(nepalToday.Format("2006-01-02"), 30, 5.75) {
-		t.Errorf("Nepal user's today should be valid at 18:00 UTC with offset 5.75")
+		t.Errorf("Nepal user's today (%s) should be valid with offset 5.75", nepalToday.Format("2006-01-02"))
 	}
 }

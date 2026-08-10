@@ -2,7 +2,7 @@
 test: test-go test-frontend
 
 test-go:
-	go test ./...
+	GOTOOLCHAIN=go1.25.0 go test ./...
 
 test-frontend:
 	yarn test
@@ -12,9 +12,9 @@ coverage: coverage-go coverage-frontend
 
 coverage-go:
 	@mkdir -p coverage-go
-	go test -coverprofile=coverage-go/coverage.out ./pkg/api/... ./pkg/database/...
-	go tool cover -func=coverage-go/coverage.out
-	go tool cover -html=coverage-go/coverage.out -o coverage-go/coverage.html
+	GOTOOLCHAIN=go1.25.0 go test -coverprofile=coverage-go/coverage.out ./pkg/api/... ./pkg/database/...
+	GOTOOLCHAIN=go1.25.0 go tool cover -func=coverage-go/coverage.out
+	GOTOOLCHAIN=go1.25.0 go tool cover -html=coverage-go/coverage.out -o coverage-go/coverage.html
 	@echo "HTML report: coverage-go/coverage.html"
 
 coverage-frontend:
