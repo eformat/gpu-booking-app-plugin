@@ -71,7 +71,8 @@ type resourceUsage struct {
 // TenantConfig identifies a single booking tenant's Kueue scope.
 type TenantConfig struct {
 	CohortName      string // Kueue Cohort name, e.g. "unreserved" or "tenanta"
-	NamespacePrefix string // user namespace prefix, e.g. "user-" or "tenanta-user-"
+	NamespacePrefix string // user namespace prefix for filtering, e.g. "tenanta-"
+	FlavorName      string // ResourceFlavor for this tenant's ClusterQueues, e.g. "gb200-tenanta"
 }
 
 var (

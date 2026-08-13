@@ -275,6 +275,13 @@ func normalizedResourceID(resource string) string {
 	return short
 }
 
+func tenantFlavorName(tenant TenantConfig) string {
+	if tenant.FlavorName != "" {
+		return tenant.FlavorName
+	}
+	return database.FlavorName()
+}
+
 func applyUserReservation(res userReservation, tenant TenantConfig) error {
 	ns := sanitizeK8sName(res.User)
 	untilStr := strconv.FormatInt(res.Until, 10)
@@ -327,7 +334,7 @@ func applyUserReservation(res userReservation, tenant TenantConfig) error {
 					"coveredResources": coveredResources,
 					"flavors": []map[string]any{
 						{
-							"name":      database.FlavorName(),
+							"name":      tenantFlavorName(tenant),
 							"resources": quotaResources,
 						},
 					},
@@ -479,7 +486,7 @@ func applyCohortRemaining(reservations []userReservation, tenant TenantConfig) e
 					"coveredResources": coveredResources,
 					"flavors": []map[string]any{
 						{
-							"name":      database.FlavorName(),
+							"name":      tenantFlavorName(tenant),
 							"resources": quotaResources,
 						},
 					},

@@ -221,12 +221,16 @@ func parseTenants(tenantsEnv, cohortEnv, prefixEnv string) []kube.TenantConfig {
 			if pair == "" {
 				continue
 			}
-			parts := strings.SplitN(pair, ":", 2)
-			if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			parts := strings.SplitN(pair, ":", 3)
+			if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
 				slog.Warn("KUEUE_TENANTS: skipping malformed entry", "entry", pair)
 				continue
 			}
-			tenants = append(tenants, kube.TenantConfig{CohortName: parts[0], NamespacePrefix: parts[1]})
+			flavor := ""
+			if len(parts) == 3 {
+				flavor = parts[2]
+			}
+			tenants = append(tenants, kube.TenantConfig{CohortName: parts[0], NamespacePrefix: parts[1], FlavorName: flavor})
 		}
 		if len(tenants) > 0 {
 			return tenants

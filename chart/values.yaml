@@ -45,7 +45,7 @@ kueue:
   # tenants: comma-separated "cohortName:namespacePrefix" pairs for multi-tenancy.
   # Example: "tenanta:tenanta-user-,tenantb:tenantb-user-"
   # Defaults to single-tenant mode (unreserved cohort, user- prefix).
-  tenants: ""
+  tenants: ""  # format: "cohort:namespacePrefix:flavorName,..." e.g. "tenanta:tenanta-:gb200-tenanta"
 
 bookingWindowDays: 30
 
