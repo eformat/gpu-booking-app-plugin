@@ -28,7 +28,7 @@ func TestReservation_CoveredResources_IncludesAllGPUTypes(t *testing.T) {
 
 	insertBooking(t, "b1", "user2", "nvidia.com/gpu", 0, "2026-05-04", 0, 24, 0)
 
-	res, err := getActiveReservationsAt(mustParseTime(t, "2026-05-04T12:00:00Z"))
+	res, err := getActiveReservationsAt(mustParseTime(t, "2026-05-04T12:00:00Z"), "unreserved")
 	if err != nil {
 		t.Fatalf("getActiveReservationsAt: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestReservation_CoveredResources_UnreservedTypesHaveZeroCount(t *testing.T)
 
 	insertBooking(t, "b1", "user2", "nvidia.com/gpu", 0, "2026-05-04", 0, 24, 0)
 
-	res, err := getActiveReservationsAt(mustParseTime(t, "2026-05-04T12:00:00Z"))
+	res, err := getActiveReservationsAt(mustParseTime(t, "2026-05-04T12:00:00Z"), "unreserved")
 	if err != nil {
 		t.Fatalf("getActiveReservationsAt: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestReservation_CPUHeadroom_MinimumTwoCPU(t *testing.T) {
 	// Minimum is 2, so should be 2
 	insertBooking(t, "b1", "user2", "nvidia.com/gpu", 0, "2026-05-04", 0, 24, 0)
 
-	res, err := getActiveReservationsAt(mustParseTime(t, "2026-05-04T12:00:00Z"))
+	res, err := getActiveReservationsAt(mustParseTime(t, "2026-05-04T12:00:00Z"), "unreserved")
 	if err != nil {
 		t.Fatalf("getActiveReservationsAt: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestReservation_MemoryHeadroom_MinimumEightGi(t *testing.T) {
 
 	insertBooking(t, "b1", "user2", "nvidia.com/gpu", 0, "2026-05-04", 0, 24, 0)
 
-	res, err := getActiveReservationsAt(mustParseTime(t, "2026-05-04T12:00:00Z"))
+	res, err := getActiveReservationsAt(mustParseTime(t, "2026-05-04T12:00:00Z"), "unreserved")
 	if err != nil {
 		t.Fatalf("getActiveReservationsAt: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestReservation_CPUHeadroom_SmallCluster(t *testing.T) {
 
 	insertBooking(t, "b1", "user2", "nvidia.com/gpu", 0, "2026-05-04", 0, 24, 0)
 
-	res, err := getActiveReservationsAt(mustParseTime(t, "2026-05-04T12:00:00Z"))
+	res, err := getActiveReservationsAt(mustParseTime(t, "2026-05-04T12:00:00Z"), "unreserved")
 	if err != nil {
 		t.Fatalf("getActiveReservationsAt: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestReservation_CohortRemaining_SubtractsReservation(t *testing.T) {
 
 	insertBooking(t, "b1", "user2", "nvidia.com/gpu", 0, "2026-05-04", 0, 24, 0)
 
-	res, err := getActiveReservationsAt(mustParseTime(t, "2026-05-04T12:00:00Z"))
+	res, err := getActiveReservationsAt(mustParseTime(t, "2026-05-04T12:00:00Z"), "unreserved")
 	if err != nil {
 		t.Fatalf("getActiveReservationsAt: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestReservation_MultipleGPUTypes_CoveredResourcesComplete(t *testing.T) {
 	insertBooking(t, "b1", "user2", "nvidia.com/gpu", 0, "2026-05-04", 0, 24, 0)
 	insertBooking(t, "b2", "user2", "nvidia.com/mig-3g.71gb", 0, "2026-05-04", 0, 24, 0)
 
-	res, err := getActiveReservationsAt(mustParseTime(t, "2026-05-04T12:00:00Z"))
+	res, err := getActiveReservationsAt(mustParseTime(t, "2026-05-04T12:00:00Z"), "unreserved")
 	if err != nil {
 		t.Fatalf("getActiveReservationsAt: %v", err)
 	}

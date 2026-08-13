@@ -49,11 +49,15 @@ import {
 } from '../utils/api';
 import { GPUResource, FALLBACK_GPU_RESOURCES, todayStr } from '../utils/constants';
 import ResourceSelector from './ResourceSelector';
+import { TenantSelector, useSelectedTenant } from './TenantSelector';
+import { useConfig } from '../utils/hooks';
 
 type SortKey = 'id' | 'user' | 'resource' | 'slotIndex' | 'date' | 'source' | 'createdAt';
 
 const AdminPage: React.FC = () => {
   const { isAdmin, loading: authLoading } = useAuth();
+  const { tenants, defaultTenant } = useConfig();
+  const [selectedTenant, setSelectedTenant] = useSelectedTenant(tenants, defaultTenant);
   const [data, setData] = React.useState<AdminResponse | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
@@ -87,6 +91,7 @@ const AdminPage: React.FC = () => {
         search: filter || undefined,
         sort: sortKey,
         sortDir: sortDir,
+        tenant: selectedTenant || undefined,
       });
       setData(result);
       if (result.config?.resources?.length > 0) {
@@ -97,7 +102,7 @@ const AdminPage: React.FC = () => {
       setError(e instanceof Error ? e.message : 'Failed to load admin data');
     }
     setLoading(false);
-  }, [page, perPage, serverSource, serverResource, filter, sortKey, sortDir]);
+  }, [page, perPage, serverSource, serverResource, filter, sortKey, sortDir, selectedTenant]);
 
   React.useEffect(() => {
     if (!authLoading && isAdmin) {
@@ -232,6 +237,11 @@ const AdminPage: React.FC = () => {
         <PageSection>
           <Title headingLevel="h1" size="2xl">
             GPU Booking Administration
+            {tenants.length > 1 && (
+              <span style={{ marginLeft: '12px' }}>
+                <TenantSelector tenants={tenants} selected={selectedTenant} onSelect={setSelectedTenant} />
+              </span>
+            )}
           </Title>
         </PageSection>
 

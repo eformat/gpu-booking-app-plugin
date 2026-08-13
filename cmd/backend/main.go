@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/eformat/gpu-booking-plugin/pkg/api"
 	"github.com/eformat/gpu-booking-plugin/pkg/database"
@@ -48,11 +49,28 @@ func main() {
 		}
 	}
 	kube.KueueBookingDays = 0
-	if v := os.Getenv("KUEUE_BOOKING_DAYS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			kube.KueueBookingDays = n
+	// Accept both KUEUE_BOOKING_DAYS (canonical) and KUEUE_SYNC_DAYS (chart alias, fixes prior mismatch)
+	for _, envKey := range []string{"KUEUE_BOOKING_DAYS", "KUEUE_SYNC_DAYS"} {
+		if v := os.Getenv(envKey); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+				kube.KueueBookingDays = n
+				break
+			}
 		}
 	}
+
+	// Tenant configuration — KUEUE_TENANTS takes precedence over legacy single-tenant vars.
+	// Format: comma-separated "cohortName:namespacePrefix" pairs.
+	// Example: "unreserved:user-,tenanta:tenanta-user-,tenantb:tenantb-user-"
+	kube.Tenants = parseTenants(
+		os.Getenv("KUEUE_TENANTS"),
+		os.Getenv("KUEUE_COHORT_NAME"),
+		os.Getenv("KUEUE_NAMESPACE_PREFIX"),
+	)
+	for _, t := range kube.Tenants {
+		api.TenantNames = append(api.TenantNames, t.CohortName)
+	}
+	slog.Info("tenant config", "tenants", len(kube.Tenants))
 
 	// GPU discovery config
 	kube.DiscoveryEnabled = os.Getenv("GPU_DISCOVERY_ENABLED") == "true"
@@ -159,7 +177,7 @@ func main() {
 		http.ServeFile(w, r, filepath.Join(pluginDir, "plugin-manifest.json"))
 	})
 
-	// Static assets
+	// Static assets (must be last — catch-all)
 	r.PathPrefix("/").Handler(http.FileServer(http.Dir(pluginDir)))
 
 	port := os.Getenv("PORT")
@@ -189,4 +207,39 @@ func main() {
 		slog.Error("TLS_CERT_FILE and TLS_KEY_FILE are required in production (set DEV_MODE=true to bypass)")
 		os.Exit(1)
 	}
+}
+
+// parseTenants builds the Tenants slice from env vars.
+// KUEUE_TENANTS (e.g. "unreserved:user-,tenanta:tenanta-user-") takes precedence.
+// Falls back to KUEUE_COHORT_NAME / KUEUE_NAMESPACE_PREFIX for single-tenant compat.
+// Default when nothing is set: one tenant {CohortName:"unreserved", NamespacePrefix:"user-"}.
+func parseTenants(tenantsEnv, cohortEnv, prefixEnv string) []kube.TenantConfig {
+	if tenantsEnv != "" {
+		var tenants []kube.TenantConfig
+		for _, pair := range strings.Split(tenantsEnv, ",") {
+			pair = strings.TrimSpace(pair)
+			if pair == "" {
+				continue
+			}
+			parts := strings.SplitN(pair, ":", 2)
+			if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+				slog.Warn("KUEUE_TENANTS: skipping malformed entry", "entry", pair)
+				continue
+			}
+			tenants = append(tenants, kube.TenantConfig{CohortName: parts[0], NamespacePrefix: parts[1]})
+		}
+		if len(tenants) > 0 {
+			return tenants
+		}
+	}
+	// Single-tenant fallback
+	cohort := "unreserved"
+	if cohortEnv != "" {
+		cohort = cohortEnv
+	}
+	prefix := "user-"
+	if prefixEnv != "" {
+		prefix = prefixEnv
+	}
+	return []kube.TenantConfig{{CohortName: cohort, NamespacePrefix: prefix}}
 }

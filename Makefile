@@ -24,7 +24,7 @@ coverage-frontend:
 REGISTRY ?= quay.io
 REPOSITORY ?= $(REGISTRY)/eformat/gpu-booking-plugin
 
-IMG := $(REPOSITORY):latest
+IMG := $(REPOSITORY):tenant
 PODMAN_ARGS ?=
 
 # clean compile

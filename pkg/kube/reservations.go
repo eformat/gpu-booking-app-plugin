@@ -111,8 +111,10 @@ func reservationCleanerLoop() {
 	for {
 		if ReservationSyncEnabled {
 			SyncReservations()
-			if err := cleanExpiredReservations(); err != nil {
-				slog.Error("reservation cleaner error", "error", err)
+			for _, t := range Tenants {
+				if err := cleanExpiredReservations(t.NamespacePrefix); err != nil {
+					slog.Error("reservation cleaner error", "tenant", t.CohortName, "error", err)
+				}
 			}
 		}
 		time.Sleep(reservationCleanInterval)
@@ -123,49 +125,54 @@ func SyncReservations() {
 	if k8sHost == "" || k8sToken == "" || !ReservationSyncEnabled {
 		return
 	}
+	for _, t := range Tenants {
+		syncReservationsForTenant(t)
+	}
+}
 
-	reservations, err := getActiveReservations()
+func syncReservationsForTenant(tenant TenantConfig) {
+	reservations, err := getActiveReservations(tenant.CohortName)
 	if err != nil {
-		slog.Error("reservation sync failed", "error", err)
+		slog.Error("reservation sync failed", "tenant", tenant.CohortName, "error", err)
 		return
 	}
 
 	for _, res := range reservations {
-		if err := applyUserReservation(res); err != nil {
-			slog.Error("reservation sync: failed to apply for user", "user", res.User, "error", err)
+		if err := applyUserReservation(res, tenant); err != nil {
+			slog.Error("reservation sync: failed to apply for user", "tenant", tenant.CohortName, "user", res.User, "error", err)
 		}
 	}
 
 	activeUsers := map[string]bool{}
 	for _, res := range reservations {
-		activeUsers["user-"+sanitizeK8sName(res.User)] = true
+		activeUsers[tenant.NamespacePrefix+sanitizeK8sName(res.User)] = true
 	}
-	if err := removeStaleReservations(activeUsers); err != nil {
-		slog.Error("reservation sync: failed to remove stale", "error", err)
+	if err := removeStaleReservations(activeUsers, tenant.NamespacePrefix); err != nil {
+		slog.Error("reservation sync: failed to remove stale", "tenant", tenant.CohortName, "error", err)
 	}
 
-	if err := applyCohortRemaining(reservations); err != nil {
-		slog.Error("reservation sync: failed to update cohort", "error", err)
+	if err := applyCohortRemaining(reservations, tenant); err != nil {
+		slog.Error("reservation sync: failed to update cohort", "tenant", tenant.CohortName, "error", err)
 	}
 
 	if len(reservations) > 0 {
-		slog.Info("reservation sync: applied user reservations", "count", len(reservations))
+		slog.Info("reservation sync: applied user reservations", "tenant", tenant.CohortName, "count", len(reservations))
 	}
 }
 
-func getActiveReservations() ([]userReservation, error) {
-	return getActiveReservationsAt(time.Now().UTC())
+func getActiveReservations(tenant string) ([]userReservation, error) {
+	return getActiveReservationsAt(time.Now().UTC(), tenant)
 }
 
-func getActiveReservationsAt(now time.Time) ([]userReservation, error) {
+func getActiveReservationsAt(now time.Time, tenant string) ([]userReservation, error) {
 	db := database.DB()
 	yesterday := now.AddDate(0, 0, -1).Format("2006-01-02")
 	tomorrow := now.AddDate(0, 0, 1).Format("2006-01-02")
 
 	rows, err := db.Query(
 		`SELECT user, resource, slot_index, date, start_hour, end_hour, utc_offset
-		 FROM bookings WHERE date BETWEEN ? AND ? AND source = ?`,
-		yesterday, tomorrow, database.SourceReserved,
+		 FROM bookings WHERE date BETWEEN ? AND ? AND source = ? AND tenant = ?`,
+		yesterday, tomorrow, database.SourceReserved, tenant,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("querying reservations: %w", err)
@@ -268,8 +275,8 @@ func normalizedResourceID(resource string) string {
 	return short
 }
 
-func applyUserReservation(res userReservation) error {
-	ns := "user-" + sanitizeK8sName(res.User)
+func applyUserReservation(res userReservation, tenant TenantConfig) error {
+	ns := tenant.NamespacePrefix + sanitizeK8sName(res.User)
 	untilStr := strconv.FormatInt(res.Until, 10)
 
 	coveredResources := []string{"cpu", "memory"}
@@ -296,7 +303,7 @@ func applyUserReservation(res userReservation) error {
 			},
 		},
 		"spec": map[string]any{
-			"cohort": "unreserved",
+			"cohort": tenant.CohortName,
 			"namespaceSelector": map[string]any{
 				"matchLabels": map[string]string{
 					"kubernetes.io/metadata.name": ns,
@@ -428,7 +435,7 @@ func applyUserReservation(res userReservation) error {
 	return nil
 }
 
-func applyCohortRemaining(reservations []userReservation) error {
+func applyCohortRemaining(reservations []userReservation, tenant TenantConfig) error {
 	cfg := database.GetGPUConfig()
 	if len(cfg.Resources) == 0 {
 		return nil
@@ -464,7 +471,7 @@ func applyCohortRemaining(reservations []userReservation) error {
 		"apiVersion": "kueue.x-k8s.io/v1beta1",
 		"kind":       "Cohort",
 		"metadata": map[string]any{
-			"name": "unreserved",
+			"name": tenant.CohortName,
 		},
 		"spec": map[string]any{
 			"resourceGroups": []map[string]any{
@@ -481,10 +488,10 @@ func applyCohortRemaining(reservations []userReservation) error {
 		},
 	}
 
-	return k8sApply("/apis/kueue.x-k8s.io/v1beta1/cohorts/unreserved", cohort)
+	return k8sApply("/apis/kueue.x-k8s.io/v1beta1/cohorts/"+tenant.CohortName, cohort)
 }
 
-func removeStaleReservations(activeUsers map[string]bool) error {
+func removeStaleReservations(activeUsers map[string]bool, namespacePrefix string) error {
 	items, err := k8sListWithLabel(
 		"/apis/kueue.x-k8s.io/v1beta1/clusterqueues",
 		"rhai-tmm.dev/until",
@@ -494,6 +501,10 @@ func removeStaleReservations(activeUsers map[string]bool) error {
 	}
 
 	for _, item := range items {
+		// Only manage CQs belonging to this tenant (by namespace prefix = CQ name prefix).
+		if !strings.HasPrefix(item.Name, namespacePrefix) {
+			continue
+		}
 		if activeUsers[item.Name] {
 			continue
 		}
@@ -519,7 +530,7 @@ func removeStaleReservations(activeUsers map[string]bool) error {
 	return nil
 }
 
-func cleanExpiredReservations() error {
+func cleanExpiredReservations(namespacePrefix string) error {
 	now := time.Now().UTC().Unix()
 
 	items, err := k8sListWithLabel(
@@ -549,6 +560,10 @@ func cleanExpiredReservations() error {
 
 	var expired, active, draining int
 	for _, item := range items {
+		// Only manage CQs belonging to this tenant.
+		if !strings.HasPrefix(item.Name, namespacePrefix) {
+			continue
+		}
 		// Already draining — check if ready to finalize
 		if item.Labels["rhai-tmm.dev/draining"] == "true" {
 			if finalizeDrainedClusterQueue(item) {

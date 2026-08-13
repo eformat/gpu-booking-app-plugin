@@ -13,19 +13,20 @@ import (
 )
 
 type Booking struct {
-	ID          string `json:"id"`
-	User        string `json:"user"`
-	Email       string `json:"email"`
-	Resource    string `json:"resource"`
-	SlotIndex   int    `json:"slotIndex"`
-	Date        string `json:"date"`
-	SlotType    string `json:"slotType"`
-	CreatedAt   string `json:"createdAt"`
-	Source      string `json:"source"`
-	Description string `json:"description"`
-	StartHour   int    `json:"startHour"`
-	EndHour     int    `json:"endHour"`
+	ID          string  `json:"id"`
+	User        string  `json:"user"`
+	Email       string  `json:"email"`
+	Resource    string  `json:"resource"`
+	SlotIndex   int     `json:"slotIndex"`
+	Date        string  `json:"date"`
+	SlotType    string  `json:"slotType"`
+	CreatedAt   string  `json:"createdAt"`
+	Source      string  `json:"source"`
+	Description string  `json:"description"`
+	StartHour   int     `json:"startHour"`
+	EndHour     int     `json:"endHour"`
 	UtcOffset   float64 `json:"utcOffset"`
+	Tenant      string  `json:"tenant"`
 }
 
 type GPUResourceSpec struct {
@@ -84,6 +85,8 @@ type Config struct {
 	BookingWindowDays int               `json:"bookingWindowDays"`
 	TotalCPU          int               `json:"totalCpu"`
 	TotalMemory       int               `json:"totalMemory"`
+	Tenants           []string          `json:"tenants"`
+	DefaultTenant     string            `json:"defaultTenant"`
 }
 
 func IsGPUResource(name string) bool {
@@ -148,7 +151,8 @@ func OpenDB(dbPath string) error {
 			start_hour INTEGER NOT NULL DEFAULT 0,
 			end_hour INTEGER NOT NULL DEFAULT 24,
 			utc_offset REAL NOT NULL DEFAULT 0,
-			UNIQUE(resource, slot_index, date, slot_type)
+			tenant TEXT NOT NULL DEFAULT 'unreserved',
+			UNIQUE(tenant, resource, slot_index, date, slot_type)
 		)
 	`)
 	if err != nil {
@@ -159,6 +163,7 @@ func OpenDB(dbPath string) error {
 	db.Exec("CREATE INDEX IF NOT EXISTS idx_bookings_date ON bookings(date)")
 	db.Exec("CREATE INDEX IF NOT EXISTS idx_bookings_resource_date ON bookings(resource, date)")
 	db.Exec("CREATE INDEX IF NOT EXISTS idx_bookings_source ON bookings(source)")
+	db.Exec("CREATE INDEX IF NOT EXISTS idx_bookings_tenant ON bookings(tenant)")
 
 	// Migrations: add columns if missing (existing databases)
 	db.Exec("ALTER TABLE bookings ADD COLUMN source TEXT NOT NULL DEFAULT 'reserved'")
@@ -166,6 +171,7 @@ func OpenDB(dbPath string) error {
 	db.Exec("ALTER TABLE bookings ADD COLUMN start_hour INTEGER NOT NULL DEFAULT 0")
 	db.Exec("ALTER TABLE bookings ADD COLUMN end_hour INTEGER NOT NULL DEFAULT 24")
 	db.Exec("ALTER TABLE bookings ADD COLUMN utc_offset REAL NOT NULL DEFAULT 0")
+	db.Exec("ALTER TABLE bookings ADD COLUMN tenant TEXT NOT NULL DEFAULT 'unreserved'")
 
 	return nil
 }
@@ -176,13 +182,19 @@ func Close() {
 	}
 }
 
-func GetConfig(bookingWindowDays int) Config {
+func GetConfig(bookingWindowDays int, tenants []string) Config {
 	cfg := gpuConfig.Load()
+	defaultTenant := ""
+	if len(tenants) > 0 {
+		defaultTenant = tenants[0]
+	}
 	return Config{
 		Resources:         cfg.Resources,
 		BookingWindowDays: bookingWindowDays,
 		TotalCPU:          cfg.TotalCPU,
 		TotalMemory:       cfg.TotalMemory,
+		Tenants:           tenants,
+		DefaultTenant:     defaultTenant,
 	}
 }
 
@@ -223,8 +235,8 @@ func LoadConfigFromFile(path string) error {
 
 func ScanBooking(rows *sql.Rows) (Booking, error) {
 	var b Booking
-	err := rows.Scan(&b.ID, &b.User, &b.Email, &b.Resource, &b.SlotIndex, &b.Date, &b.SlotType, &b.CreatedAt, &b.Source, &b.Description, &b.StartHour, &b.EndHour, &b.UtcOffset)
+	err := rows.Scan(&b.ID, &b.User, &b.Email, &b.Resource, &b.SlotIndex, &b.Date, &b.SlotType, &b.CreatedAt, &b.Source, &b.Description, &b.StartHour, &b.EndHour, &b.UtcOffset, &b.Tenant)
 	return b, err
 }
 
-const BookingColumns = "id, user, email, resource, slot_index, date, slot_type, created_at, source, description, start_hour, end_hour, utc_offset"
+const BookingColumns = "id, user, email, resource, slot_index, date, slot_type, created_at, source, description, start_hour, end_hour, utc_offset, tenant"

@@ -28,6 +28,7 @@ import {
   getUtcOffsetHours,
 } from '../utils/constants';
 import { useBookings, useConfig, useClock, usePreemptedWorkloads } from '../utils/hooks';
+import { TenantSelector, useSelectedTenant } from './TenantSelector';
 import ResourceSelector from './ResourceSelector';
 import CalendarGrid from './CalendarGrid';
 import GpuUsagePanel from './GpuUsagePanel';
@@ -37,8 +38,9 @@ import PreemptionBanner from './PreemptionBanner';
 
 const BookingPage: React.FC = () => {
   useAuth();
-  const { bookings, activeReservations, currentUser, loading: bookingsLoading, fetchBookings } = useBookings();
-  const { gpuResources, bookingWindowDays } = useConfig();
+  const { gpuResources, bookingWindowDays, tenants, defaultTenant } = useConfig();
+  const [selectedTenant, setSelectedTenant] = useSelectedTenant(tenants, defaultTenant);
+  const { bookings, activeReservations, currentUser, loading: bookingsLoading, fetchBookings } = useBookings(selectedTenant || undefined);
   const { preemptedWorkloads } = usePreemptedWorkloads();
   const utcNow = useClock();
 
@@ -113,7 +115,7 @@ const BookingPage: React.FC = () => {
     setReservingKey(key);
     setError(null);
     try {
-      await apiCreateBooking({ resource, slotIndex, date, slotType, startHour: 0, endHour: 24, utcOffset: getUtcOffsetHours(date) });
+      await apiCreateBooking({ resource, slotIndex, date, slotType, startHour: 0, endHour: 24, utcOffset: getUtcOffsetHours(date) }, selectedTenant || undefined);
       await fetchBookings();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to reserve');
@@ -124,7 +126,7 @@ const BookingPage: React.FC = () => {
   const handleCancel = async (id: string) => {
     setError(null);
     try {
-      await cancelBooking(id);
+      await cancelBooking(id, selectedTenant || undefined);
       setConfirmCancelId(null);
       await fetchBookings();
     } catch (e) {
@@ -142,9 +144,9 @@ const BookingPage: React.FC = () => {
     utcOffset: number,
   ) => {
     if (editBooking) {
-      await cancelBooking(editBooking.id);
+      await cancelBooking(editBooking.id, selectedTenant || undefined);
     }
-    await createBulkBooking({ resources, startDate, endDate, description, startHour, endHour, utcOffset });
+    await createBulkBooking({ resources, startDate, endDate, description, startHour, endHour, utcOffset }, selectedTenant || undefined);
     setShowBookingModal(false);
     setEditBooking(null);
     await fetchBookings();
@@ -191,7 +193,7 @@ const BookingPage: React.FC = () => {
     setCancellingAll(true);
     setError(null);
     try {
-      await bulkCancelBookings(ids);
+      await bulkCancelBookings(ids, selectedTenant || undefined);
       setConfirmCancelAll(false);
       await fetchBookings();
     } catch (e) {
@@ -234,11 +236,17 @@ const BookingPage: React.FC = () => {
             <div>
               <Title headingLevel="h1" size="2xl">
                 GPU Resource Booking
+                {tenants.length > 1 && (
+                  <span style={{ marginLeft: '12px' }}>
+                    <TenantSelector tenants={tenants} selected={selectedTenant} onSelect={setSelectedTenant} />
+                  </span>
+                )}
               </Title>
               <div style={{ color: 'var(--pf-t--global--text--color--regular)', opacity: 0.7, marginTop: '8px' }}>
                 Reserve GPU resources
                 {gpuResources.length > 0 && ` — ${gpuResources[0].name.replace(/ Full GPU$/, '')}`}
                 {gpuResources.length > 1 && ' with MIG partitioning'}
+                {tenants.length > 1 && selectedTenant && ` [${selectedTenant}]`}
               </div>
               <div style={{ fontFamily: 'monospace', color: 'var(--pf-t--global--text--color--regular)', opacity: 0.7, fontSize: '13px', marginTop: '4px' }}>
                 {utcNow}

@@ -46,6 +46,10 @@ func AdminListBookings(w http.ResponseWriter, r *http.Request) {
 	where := "WHERE 1=1"
 	args := []any{}
 
+	if tenant := r.URL.Query().Get("tenant"); tenant != "" {
+		where += " AND tenant = ?"
+		args = append(args, tenant)
+	}
 	if source := r.URL.Query().Get("source"); source != "" {
 		where += " AND source = ?"
 		args = append(args, source)
@@ -117,7 +121,7 @@ func AdminListBookings(w http.ResponseWriter, r *http.Request) {
 		"total":                  total,
 		"limit":                  limit,
 		"offset":                 offset,
-		"config":                 database.GetConfig(BookingWindowDays),
+		"config":                 database.GetConfig(BookingWindowDays, TenantNames),
 		"totalSlots":             40,
 		"reservationSyncEnabled": kube.ReservationSyncEnabled,
 	})

@@ -48,7 +48,7 @@ func TestSyncBookings_NoReservations(t *testing.T) {
 	usages := []resourceUsage{
 		{Namespace: "user-alice", User: "alice", Resource: "nvidia.com/gpu", Count: 2},
 	}
-	if err := syncBookings(usages, dates); err != nil {
+	if err := syncBookings(usages, dates, "unreserved"); err != nil {
 		t.Fatalf("syncBookings: %v", err)
 	}
 
@@ -74,7 +74,7 @@ func TestSyncBookings_ReservationFulfilled(t *testing.T) {
 	usages := []resourceUsage{
 		{Namespace: "user-alice", User: "alice", Resource: "nvidia.com/gpu", Count: 1},
 	}
-	if err := syncBookings(usages, dates); err != nil {
+	if err := syncBookings(usages, dates, "unreserved"); err != nil {
 		t.Fatalf("syncBookings: %v", err)
 	}
 
@@ -102,7 +102,7 @@ func TestSyncBookings_ReservationPlusExtraWorkload(t *testing.T) {
 	usages := []resourceUsage{
 		{Namespace: "user-alice", User: "alice", Resource: "nvidia.com/gpu", Count: 2},
 	}
-	if err := syncBookings(usages, dates); err != nil {
+	if err := syncBookings(usages, dates, "unreserved"); err != nil {
 		t.Fatalf("syncBookings: %v", err)
 	}
 
@@ -134,7 +134,7 @@ func TestSyncBookings_DifferentUserReservation(t *testing.T) {
 	usages := []resourceUsage{
 		{Namespace: "user-alice", User: "alice", Resource: "nvidia.com/gpu", Count: 1},
 	}
-	if err := syncBookings(usages, dates); err != nil {
+	if err := syncBookings(usages, dates, "unreserved"); err != nil {
 		t.Fatalf("syncBookings: %v", err)
 	}
 
@@ -164,7 +164,7 @@ func TestSyncBookings_MultipleUsersNoOverlap(t *testing.T) {
 		{Namespace: "user-alice", User: "alice", Resource: "nvidia.com/gpu", Count: 1},
 		{Namespace: "user-bob", User: "bob", Resource: "nvidia.com/gpu", Count: 1},
 	}
-	if err := syncBookings(usages, dates); err != nil {
+	if err := syncBookings(usages, dates, "unreserved"); err != nil {
 		t.Fatalf("syncBookings: %v", err)
 	}
 
@@ -189,7 +189,7 @@ func TestSyncBookings_DeterministicSlotOrder(t *testing.T) {
 		{Namespace: "user-alice", User: "alice", Resource: "nvidia.com/gpu", Count: 1},
 	}
 
-	if err := syncBookings(usages, dates); err != nil {
+	if err := syncBookings(usages, dates, "unreserved"); err != nil {
 		t.Fatalf("syncBookings first: %v", err)
 	}
 	slots1 := getBookingSlots(t, "nvidia.com/gpu", "2026-06-01", database.SourceConsumed)
@@ -197,7 +197,7 @@ func TestSyncBookings_DeterministicSlotOrder(t *testing.T) {
 	// Clear consumed and re-sync
 	database.DB().Exec("DELETE FROM bookings WHERE source = ?", database.SourceConsumed)
 
-	if err := syncBookings(usages, dates); err != nil {
+	if err := syncBookings(usages, dates, "unreserved"); err != nil {
 		t.Fatalf("syncBookings second: %v", err)
 	}
 	slots2 := getBookingSlots(t, "nvidia.com/gpu", "2026-06-01", database.SourceConsumed)
@@ -220,10 +220,10 @@ func TestSyncBookings_Idempotent(t *testing.T) {
 		{Namespace: "user-alice", User: "alice", Resource: "nvidia.com/gpu", Count: 1},
 	}
 
-	if err := syncBookings(usages, dates); err != nil {
+	if err := syncBookings(usages, dates, "unreserved"); err != nil {
 		t.Fatalf("syncBookings first: %v", err)
 	}
-	if err := syncBookings(usages, dates); err != nil {
+	if err := syncBookings(usages, dates, "unreserved"); err != nil {
 		t.Fatalf("syncBookings second: %v", err)
 	}
 
@@ -242,7 +242,7 @@ func TestSyncBookings_StaleBookingsRemoved(t *testing.T) {
 	usages := []resourceUsage{
 		{Namespace: "user-alice", User: "alice", Resource: "nvidia.com/gpu", Count: 1},
 	}
-	if err := syncBookings(usages, dates); err != nil {
+	if err := syncBookings(usages, dates, "unreserved"); err != nil {
 		t.Fatalf("syncBookings first: %v", err)
 	}
 	if c := countBookings(t, "nvidia.com/gpu", futureDate, database.SourceConsumed); c != 1 {
@@ -250,7 +250,7 @@ func TestSyncBookings_StaleBookingsRemoved(t *testing.T) {
 	}
 
 	// Second sync: alice's workload is gone
-	if err := syncBookings([]resourceUsage{}, dates); err != nil {
+	if err := syncBookings([]resourceUsage{}, dates, "unreserved"); err != nil {
 		t.Fatalf("syncBookings second: %v", err)
 	}
 
@@ -271,7 +271,7 @@ func TestSyncBookings_EmailUserMatchesReservation(t *testing.T) {
 	usages := []resourceUsage{
 		{Namespace: "user-ltsai", User: "ltsai", Resource: "nvidia.com/gpu", Count: 1},
 	}
-	if err := syncBookings(usages, dates); err != nil {
+	if err := syncBookings(usages, dates, "unreserved"); err != nil {
 		t.Fatalf("syncBookings: %v", err)
 	}
 
@@ -299,7 +299,7 @@ func TestSyncBookings_EmailUserPartialCoverage(t *testing.T) {
 	usages := []resourceUsage{
 		{Namespace: "user-ltsai", User: "ltsai", Resource: "nvidia.com/gpu", Count: 4},
 	}
-	if err := syncBookings(usages, dates); err != nil {
+	if err := syncBookings(usages, dates, "unreserved"); err != nil {
 		t.Fatalf("syncBookings: %v", err)
 	}
 
@@ -334,7 +334,7 @@ func TestSyncBookings_ReservationPartialDateCoverage(t *testing.T) {
 	usages := []resourceUsage{
 		{Namespace: "user-alice", User: "alice", Resource: "nvidia.com/gpu", Count: 1},
 	}
-	if err := syncBookings(usages, dates); err != nil {
+	if err := syncBookings(usages, dates, "unreserved"); err != nil {
 		t.Fatalf("syncBookings: %v", err)
 	}
 
@@ -369,7 +369,7 @@ func TestSyncBookings_ReservationPartialDatesWithOverflow(t *testing.T) {
 	usages := []resourceUsage{
 		{Namespace: "user-alice", User: "alice", Resource: "nvidia.com/gpu", Count: 6},
 	}
-	if err := syncBookings(usages, dates); err != nil {
+	if err := syncBookings(usages, dates, "unreserved"); err != nil {
 		t.Fatalf("syncBookings: %v", err)
 	}
 
@@ -403,7 +403,7 @@ func TestSyncBookings_MultiNamespaceSameUser(t *testing.T) {
 		{Namespace: "ns-a", User: "alice", Resource: "nvidia.com/gpu", Count: 2},
 		{Namespace: "ns-b", User: "alice", Resource: "nvidia.com/gpu", Count: 4},
 	}
-	if err := syncBookings(usages, dates); err != nil {
+	if err := syncBookings(usages, dates, "unreserved"); err != nil {
 		t.Fatalf("syncBookings: %v", err)
 	}
 

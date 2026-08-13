@@ -42,6 +42,10 @@ kueue:
   syncEnabled: true
   syncIntervalSeconds: 30
   syncDays: 7
+  # tenants: comma-separated "cohortName:namespacePrefix" pairs for multi-tenancy.
+  # Example: "tenanta:tenanta-user-,tenantb:tenantb-user-"
+  # Defaults to single-tenant mode (unreserved cohort, user- prefix).
+  tenants: ""
 
 bookingWindowDays: 30
 

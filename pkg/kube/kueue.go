@@ -68,13 +68,22 @@ type resourceUsage struct {
 	Count     int
 }
 
+// TenantConfig identifies a single booking tenant's Kueue scope.
+type TenantConfig struct {
+	CohortName      string // Kueue Cohort name, e.g. "unreserved" or "tenanta"
+	NamespacePrefix string // user namespace prefix, e.g. "user-" or "tenanta-user-"
+}
+
 var (
 	KueueSyncEnabled  bool
 	KueueSyncInterval int
 	KueueBookingDays  int
-	k8sHost           string
-	k8sToken          string
-	k8sHTTPClient     *http.Client
+	// Tenants is the list of active tenant configs. Populated from KUEUE_TENANTS
+	// at startup; defaults to a single entry {CohortName:"unreserved", NamespacePrefix:"user-"}.
+	Tenants       []TenantConfig
+	k8sHost       string
+	k8sToken      string
+	k8sHTTPClient *http.Client
 )
 
 func InitK8sClient() {
@@ -200,14 +209,16 @@ func InitKueueSync() {
 func kueueSyncLoop() {
 	time.Sleep(5 * time.Second)
 	for {
-		if err := kueueSync(); err != nil {
-			slog.Error("kueue sync error", "error", err)
+		for _, t := range Tenants {
+			if err := kueueSyncTenant(t); err != nil {
+				slog.Error("kueue sync error", "tenant", t.CohortName, "error", err)
+			}
 		}
 		time.Sleep(time.Duration(KueueSyncInterval) * time.Second)
 	}
 }
 
-func kueueSync() error {
+func kueueSyncTenant(tenant TenantConfig) error {
 	queues, err := listLocalQueues()
 	if err != nil {
 		return fmt.Errorf("listing local queues: %w", err)
@@ -218,6 +229,10 @@ func kueueSync() error {
 	nsCache := map[string]string{}
 
 	for _, q := range queues.Items {
+		// Only process namespaces belonging to this tenant.
+		if !strings.HasPrefix(q.Metadata.Namespace, tenant.NamespacePrefix) {
+			continue
+		}
 		if q.Status.ReservingWorkloads == 0 && q.Status.AdmittedWorkloads == 0 {
 			continue
 		}
@@ -263,7 +278,7 @@ func kueueSync() error {
 	}
 
 	dates := getBookingDates()
-	return syncBookings(usages, dates)
+	return syncBookings(usages, dates, tenant.CohortName)
 }
 
 func listLocalQueues() (*k8sLocalQueueList, error) {
@@ -357,7 +372,7 @@ func getBookingDates() []string {
 	return dates
 }
 
-func syncBookings(usages []resourceUsage, dates []string) error {
+func syncBookings(usages []resourceUsage, dates []string, tenant string) error {
 	db := database.DB()
 
 	type bookingKey struct {
@@ -393,7 +408,7 @@ func syncBookings(usages []resourceUsage, dates []string) error {
 		})
 
 		// Build set of slots occupied by reserved bookings (per date) and count per user
-		reservedSlots := map[string]map[int]bool{}     // date -> set of slot indices
+		reservedSlots := map[string]map[int]bool{}      // date -> set of slot indices
 		reservedSlotUser := map[string]map[int]string{} // date -> slot index -> normalised user
 		userReserved := map[string]map[string]int{}     // date -> normalised user -> count of reserved slots
 		for _, date := range dates {
@@ -401,8 +416,8 @@ func syncBookings(usages []resourceUsage, dates []string) error {
 			slotUser := map[int]string{}
 			perUser := map[string]int{}
 			rows, err := db.Query(
-				"SELECT slot_index, user FROM bookings WHERE resource = ? AND date = ? AND source = ?",
-				resource, date, database.SourceReserved,
+				"SELECT slot_index, user FROM bookings WHERE resource = ? AND date = ? AND source = ? AND tenant = ?",
+				resource, date, database.SourceReserved, tenant,
 			)
 			if err == nil {
 				for rows.Next() {
@@ -477,7 +492,7 @@ func syncBookings(usages []resourceUsage, dates []string) error {
 				}
 				if slotIdx < 0 {
 					slog.Warn("kueue sync: no free slot within resource limit, skipping",
-						"resource", u.Resource, "user", u.User, "maxSlots", maxSlots)
+						"tenant", tenant, "resource", u.Resource, "user", u.User, "maxSlots", maxSlots)
 					continue
 				}
 
@@ -504,7 +519,11 @@ func syncBookings(usages []resourceUsage, dates []string) error {
 		}
 	}
 
-	rows, err := db.Query("SELECT id, resource, slot_index, date, slot_type FROM bookings WHERE source = ?", database.SourceConsumed)
+	// Fetch only this tenant's consumed bookings — critical to avoid cross-tenant deletions.
+	rows, err := db.Query(
+		"SELECT id, resource, slot_index, date, slot_type FROM bookings WHERE source = ? AND tenant = ?",
+		database.SourceConsumed, tenant,
+	)
 	if err != nil {
 		return fmt.Errorf("querying kueue bookings: %w", err)
 	}
@@ -530,10 +549,10 @@ func syncBookings(usages []resourceUsage, dates []string) error {
 	}
 
 	for _, id := range toRemove {
-		db.Exec("DELETE FROM bookings WHERE id = ? AND source = ?", id, database.SourceConsumed)
+		db.Exec("DELETE FROM bookings WHERE id = ? AND source = ? AND tenant = ?", id, database.SourceConsumed, tenant)
 	}
 	if len(toRemove) > 0 {
-		slog.Info("kueue sync: removed stale bookings", "count", len(toRemove))
+		slog.Info("kueue sync: removed stale bookings", "tenant", tenant, "count", len(toRemove))
 	}
 
 	added := 0
@@ -546,11 +565,11 @@ func syncBookings(usages []resourceUsage, dates []string) error {
 		user := desiredMeta[id]
 		createdAt := time.Now().UTC().Format(time.RFC3339)
 
-		// Check if a reserved booking occupies this slot
+		// Check if a reserved booking for this tenant occupies this slot
 		var reservedUser string
 		err := db.QueryRow(
-			"SELECT user FROM bookings WHERE resource = ? AND slot_index = ? AND date = ? AND slot_type IN (?, ?) AND source = ?",
-			key.resource, key.slotIndex, key.date, database.SlotTypeFull, key.slotType, database.SourceReserved,
+			"SELECT user FROM bookings WHERE resource = ? AND slot_index = ? AND date = ? AND slot_type IN (?, ?) AND source = ? AND tenant = ?",
+			key.resource, key.slotIndex, key.date, database.SlotTypeFull, key.slotType, database.SourceReserved, tenant,
 		).Scan(&reservedUser)
 		if err == nil {
 			skipped++
@@ -558,18 +577,18 @@ func syncBookings(usages []resourceUsage, dates []string) error {
 		}
 
 		_, err = db.Exec(
-			"INSERT OR IGNORE INTO bookings (id, user, email, resource, slot_index, date, slot_type, created_at, source, description, start_hour, end_hour, utc_offset) VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, '', 0, 24, 0)",
-			id, user, key.resource, key.slotIndex, key.date, key.slotType, createdAt, database.SourceConsumed,
+			"INSERT OR IGNORE INTO bookings (id, user, email, resource, slot_index, date, slot_type, created_at, source, description, start_hour, end_hour, utc_offset, tenant) VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, '', 0, 24, 0, ?)",
+			id, user, key.resource, key.slotIndex, key.date, key.slotType, createdAt, database.SourceConsumed, tenant,
 		)
 		if err != nil {
-			slog.Error("kueue sync: failed to insert booking", "bookingId", id, "error", err)
+			slog.Error("kueue sync: failed to insert booking", "tenant", tenant, "bookingId", id, "error", err)
 			continue
 		}
 		added++
 	}
 
 	if added > 0 || len(toRemove) > 0 {
-		slog.Info("kueue sync: reconciled", "added", added, "removed", len(toRemove), "skipped", skipped, "total_desired", len(desired))
+		slog.Info("kueue sync: reconciled", "tenant", tenant, "added", added, "removed", len(toRemove), "skipped", skipped, "total_desired", len(desired))
 	}
 
 	return nil

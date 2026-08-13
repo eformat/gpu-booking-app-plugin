@@ -40,6 +40,8 @@ export interface ConfigResponse {
   bookingWindowDays: number;
   totalCpu: number;
   totalMemory: number;
+  tenants: string[];
+  defaultTenant: string;
 }
 
 export const getConfig = () => request<ConfigResponse>('/config');
@@ -51,7 +53,8 @@ export interface BookingsResponse {
   currentUser: string;
 }
 
-export const getBookings = () => request<BookingsResponse>('/bookings');
+export const getBookings = (tenant?: string) =>
+  request<BookingsResponse>(tenant ? `/bookings?tenant=${encodeURIComponent(tenant)}` : '/bookings');
 
 export interface BookingRequest {
   resource: string;
@@ -64,8 +67,11 @@ export interface BookingRequest {
   utcOffset?: number;
 }
 
-export const createBooking = (data: BookingRequest) =>
-  request<Booking>('/bookings', { method: 'POST', body: JSON.stringify(data) });
+export const createBooking = (data: BookingRequest, tenant?: string) =>
+  request<Booking>(tenant ? `/bookings?tenant=${encodeURIComponent(tenant)}` : '/bookings', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
 
 export interface BulkBookingRequest {
   resources: Record<string, number>;
@@ -82,19 +88,27 @@ export interface BulkBookingResponse {
   errors: string[];
 }
 
-export const createBulkBooking = (data: BulkBookingRequest) =>
-  request<BulkBookingResponse>('/bookings/bulk', { method: 'POST', body: JSON.stringify(data) });
+export const createBulkBooking = (data: BulkBookingRequest, tenant?: string) =>
+  request<BulkBookingResponse>(tenant ? `/bookings/bulk?tenant=${encodeURIComponent(tenant)}` : '/bookings/bulk', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
 
-export const cancelBooking = (id: string) =>
-  request<{ status: string }>(`/bookings?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+export const cancelBooking = (id: string, tenant?: string) => {
+  let path = `/bookings?id=${encodeURIComponent(id)}`;
+  if (tenant) path += `&tenant=${encodeURIComponent(tenant)}`;
+  return request<{ status: string }>(path, { method: 'DELETE' });
+};
 
 export interface BulkCancelResponse {
   deleted: string[];
   errors: string[];
 }
 
-export const bulkCancelBookings = (ids: string[]) =>
-  request<BulkCancelResponse>('/bookings/bulk/cancel', { method: 'DELETE', body: JSON.stringify({ ids }) });
+export const bulkCancelBookings = (ids: string[], tenant?: string) => {
+  const path = tenant ? `/bookings/bulk/cancel?tenant=${encodeURIComponent(tenant)}` : '/bookings/bulk/cancel';
+  return request<BulkCancelResponse>(path, { method: 'DELETE', body: JSON.stringify({ ids }) });
+};
 
 // Admin
 export interface AdminResponse {
@@ -115,6 +129,7 @@ export const adminGetBookings = (params: {
   search?: string;
   sort?: string;
   sortDir?: 'asc' | 'desc';
+  tenant?: string;
 } = {}) => {
   const q = new URLSearchParams();
   q.set('limit', String(params.limit ?? 100));
@@ -124,6 +139,7 @@ export const adminGetBookings = (params: {
   if (params.search) q.set('search', params.search);
   if (params.sort) q.set('sort', params.sort);
   if (params.sortDir) q.set('sort_dir', params.sortDir);
+  if (params.tenant) q.set('tenant', params.tenant);
   return request<AdminResponse>(`/admin?${q.toString()}`);
 };
 

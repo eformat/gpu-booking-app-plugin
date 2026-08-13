@@ -47,8 +47,12 @@ spec:
               value: {{ .Values.kueue.syncEnabled | quote }}
             - name: KUEUE_SYNC_INTERVAL
               value: {{ .Values.kueue.syncIntervalSeconds | quote }}
-            - name: KUEUE_SYNC_DAYS
+            - name: KUEUE_BOOKING_DAYS
               value: {{ .Values.kueue.syncDays | quote }}
+            {{- if .Values.kueue.tenants }}
+            - name: KUEUE_TENANTS
+              value: {{ .Values.kueue.tenants | quote }}
+            {{- end }}
             - name: GPU_DISCOVERY_ENABLED
               value: {{ .Values.gpuDiscovery.enabled | quote }}
             - name: GPU_DISCOVERY_INTERVAL

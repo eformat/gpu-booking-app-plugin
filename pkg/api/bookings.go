@@ -12,16 +12,34 @@ import (
 	"github.com/eformat/gpu-booking-plugin/pkg/kube"
 )
 
+// resolveTenant returns the tenant for a request. Uses the ?tenant= query param
+// when present; falls back to the first configured tenant (single-tenant compat).
+func resolveTenant(r *http.Request) string {
+	if t := r.URL.Query().Get("tenant"); t != "" {
+		// Validate the requested tenant exists
+		for _, name := range TenantNames {
+			if name == t {
+				return t
+			}
+		}
+	}
+	if len(TenantNames) > 0 {
+		return TenantNames[0]
+	}
+	return "unreserved"
+}
+
 func GetBookings(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	user := GetUser(r)
 	db := database.DB()
+	tenant := resolveTenant(r)
 
 	startDate := time.Now().AddDate(0, 0, -7).Format("2006-01-02")
 	endDate := time.Now().AddDate(0, 0, BookingWindowDays+1).Format("2006-01-02")
 	rows, err := db.QueryContext(ctx,
-		"SELECT "+database.BookingColumns+" FROM bookings WHERE date >= ? AND date < ? ORDER BY date, slot_type",
-		startDate, endDate)
+		"SELECT "+database.BookingColumns+" FROM bookings WHERE date >= ? AND date < ? AND tenant = ? ORDER BY date, slot_type",
+		startDate, endDate, tenant)
 	if err != nil {
 		HttpError(w, http.StatusInternalServerError, "database_error")
 		slog.Error("failed to query bookings", "error", err)
@@ -57,7 +75,7 @@ func GetBookings(w http.ResponseWriter, r *http.Request) {
 		utcEnd := base.Add(time.Duration((float64(b.EndHour) - b.UtcOffset) * float64(time.Hour)))
 		if !now.Before(utcStart) && now.Before(utcEnd) {
 			if _, ok := activeRes[b.User]; !ok {
-				activeRes[b.User] = "user-" + b.User
+				activeRes[b.User] = tenant + "-user-" + b.User
 			}
 		}
 	}
@@ -73,6 +91,7 @@ func CreateBooking(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	user := GetUser(r)
 	db := database.DB()
+	tenant := resolveTenant(r)
 
 	var req struct {
 		Resource    string `json:"resource"`
@@ -113,10 +132,10 @@ func CreateBooking(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check for conflicts
+	// Check for conflicts within this tenant
 	rows, err := db.QueryContext(ctx,
-		"SELECT id, source FROM bookings WHERE resource = ? AND slot_index = ? AND date = ?",
-		req.Resource, req.SlotIndex, req.Date,
+		"SELECT id, source FROM bookings WHERE resource = ? AND slot_index = ? AND date = ? AND tenant = ?",
+		req.Resource, req.SlotIndex, req.Date, tenant,
 	)
 	if err != nil {
 		HttpError(w, http.StatusInternalServerError, "database_error")
@@ -177,8 +196,8 @@ func CreateBooking(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, err = db.ExecContext(ctx,
-		"INSERT INTO bookings (id, user, email, resource, slot_index, date, slot_type, created_at, source, description, start_hour, end_hour, utc_offset) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		id, user.Username, "", req.Resource, req.SlotIndex, req.Date, req.SlotType, createdAt, database.SourceReserved, desc, startHour, endHour, utcOffset,
+		"INSERT INTO bookings (id, user, email, resource, slot_index, date, slot_type, created_at, source, description, start_hour, end_hour, utc_offset, tenant) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		id, user.Username, "", req.Resource, req.SlotIndex, req.Date, req.SlotType, createdAt, database.SourceReserved, desc, startHour, endHour, utcOffset, tenant,
 	)
 	if err != nil {
 		JsonResponseStatus(w, http.StatusConflict, map[string]string{"error": "slot_taken"})
@@ -331,6 +350,7 @@ func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	user := GetUser(r)
 	db := database.DB()
+	tenant := resolveTenant(r)
 
 	var req struct {
 		Resources   map[string]int `json:"resources"`
@@ -399,7 +419,7 @@ func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 		dates = append(dates, d.Format("2006-01-02"))
 	}
 
-	cfg := database.GetConfig(BookingWindowDays)
+	cfg := database.GetConfig(BookingWindowDays, TenantNames)
 
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -451,9 +471,10 @@ func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		query := fmt.Sprintf(
-			"SELECT resource, date, slot_index, source, id FROM bookings WHERE resource IN (%s) AND date IN (%s)",
+			"SELECT resource, date, slot_index, source, id FROM bookings WHERE resource IN (%s) AND date IN (%s) AND tenant = ?",
 			string(resPlaceholders), string(datePlaceholders),
 		)
+		args = append(args, tenant)
 		slotRows, err := tx.QueryContext(ctx, query, args...)
 		if err != nil {
 			HttpError(w, http.StatusInternalServerError, "database_error")
@@ -524,8 +545,8 @@ func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 				createdAt := time.Now().UTC().Format(time.RFC3339)
 
 				_, err := tx.ExecContext(ctx,
-					"INSERT INTO bookings (id, user, email, resource, slot_index, date, slot_type, created_at, source, description, start_hour, end_hour, utc_offset) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-					id, user.Username, "", resource, unitIdx, date, database.SlotTypeFull, createdAt, database.SourceReserved, desc, startHour, endHour, utcOffset,
+					"INSERT INTO bookings (id, user, email, resource, slot_index, date, slot_type, created_at, source, description, start_hour, end_hour, utc_offset, tenant) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					id, user.Username, "", resource, unitIdx, date, database.SlotTypeFull, createdAt, database.SourceReserved, desc, startHour, endHour, utcOffset, tenant,
 				)
 				if err != nil {
 					slog.Error("bulk booking: insert failed", "resource", resource, "slot", unitIdx, "date", date, "error", err)

@@ -22,8 +22,8 @@ func TestAdminListBookings(t *testing.T) {
 	today := time.Now().Format("2006-01-02")
 	for i := 0; i < 3; i++ {
 		db.Exec(
-			"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-			"booking-"+string(rune('a'+i)), "alice", "", "nvidia.com/gpu", i, today, "full", "now", database.SourceReserved, "", 0, 24, 0,
+			"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+			"booking-"+string(rune('a'+i)), "alice", "", "nvidia.com/gpu", i, today, "full", "now", database.SourceReserved, "", 0, 24, 0, "unreserved",
 		)
 	}
 
@@ -72,12 +72,12 @@ func TestAdminListBookingsWithFilters(t *testing.T) {
 
 	today := time.Now().Format("2006-01-02")
 	db.Exec(
-		"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-		"booking-1", "alice", "", "nvidia.com/gpu", 0, today, "full", "now", database.SourceReserved, "", 0, 24, 0,
+		"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		"booking-1", "alice", "", "nvidia.com/gpu", 0, today, "full", "now", database.SourceReserved, "", 0, 24, 0, "unreserved",
 	)
 	db.Exec(
-		"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-		"booking-2", "bob", "", "nvidia.com/mig-1g.18gb", 0, today, "full", "now", database.SourceConsumed, "", 0, 24, 0,
+		"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		"booking-2", "bob", "", "nvidia.com/mig-1g.18gb", 0, today, "full", "now", database.SourceConsumed, "", 0, 24, 0, "unreserved",
 	)
 
 	// Filter by source
@@ -124,8 +124,8 @@ func TestAdminListBookingsPagination(t *testing.T) {
 	today := time.Now().Format("2006-01-02")
 	for i := 0; i < 5; i++ {
 		db.Exec(
-			"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-			"booking-"+string(rune('a'+i)), "alice", "", "nvidia.com/gpu", i, today, "full", "now", database.SourceReserved, "", 0, 24, 0,
+			"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+			"booking-"+string(rune('a'+i)), "alice", "", "nvidia.com/gpu", i, today, "full", "now", database.SourceReserved, "", 0, 24, 0, "unreserved",
 		)
 	}
 
@@ -157,8 +157,8 @@ func TestAdminDeleteBooking(t *testing.T) {
 
 	today := time.Now().Format("2006-01-02")
 	db.Exec(
-		"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-		"booking-1", "alice", "", "nvidia.com/gpu", 0, today, "full", "now", database.SourceReserved, "", 0, 24, 0,
+		"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		"booking-1", "alice", "", "nvidia.com/gpu", 0, today, "full", "now", database.SourceReserved, "", 0, 24, 0, "unreserved",
 	)
 
 	req := httptest.NewRequest(http.MethodDelete, "/admin?id=booking-1", nil)
@@ -213,8 +213,8 @@ func TestAdminDeleteAllBookings(t *testing.T) {
 	today := time.Now().Format("2006-01-02")
 	for i := 0; i < 3; i++ {
 		db.Exec(
-			"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-			"booking-"+string(rune('a'+i)), "alice", "", "nvidia.com/gpu", i, today, "full", "now", database.SourceReserved, "", 0, 24, 0,
+			"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+			"booking-"+string(rune('a'+i)), "alice", "", "nvidia.com/gpu", i, today, "full", "now", database.SourceReserved, "", 0, 24, 0, "unreserved",
 		)
 	}
 
@@ -366,8 +366,8 @@ func TestAdminImportDatabase(t *testing.T) {
 
 	today := time.Now().Format("2006-01-02")
 	db.Exec(
-		"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-		"booking-before", "alice", "", "nvidia.com/gpu", 0, today, "full", "now", database.SourceReserved, "", 0, 24, 0,
+		"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		"booking-before", "alice", "", "nvidia.com/gpu", 0, today, "full", "now", database.SourceReserved, "", 0, 24, 0, "unreserved",
 	)
 
 	// Export the database
@@ -480,8 +480,8 @@ func TestAdminListBookingsWithOffset(t *testing.T) {
 	today := time.Now().Format("2006-01-02")
 	for i := range 5 {
 		db.Exec(
-			"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-			fmt.Sprintf("booking-%d", i), "alice", "", "nvidia.com/gpu", i, today, "full", "now", database.SourceReserved, "", 0, 24, 0,
+			"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+			fmt.Sprintf("booking-%d", i), "alice", "", "nvidia.com/gpu", i, today, "full", "now", database.SourceReserved, "", 0, 24, 0, "unreserved",
 		)
 	}
 
@@ -509,16 +509,16 @@ func TestAdminListBookingsServerSort(t *testing.T) {
 	db := database.DB()
 
 	db.Exec(
-		"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-		"booking-1", "charlie", "", "nvidia.com/gpu", 0, "2026-01-01", "full", "2026-01-01T10:00:00Z", database.SourceReserved, "", 0, 24, 0,
+		"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		"booking-1", "charlie", "", "nvidia.com/gpu", 0, "2026-01-01", "full", "2026-01-01T10:00:00Z", database.SourceReserved, "", 0, 24, 0, "unreserved",
 	)
 	db.Exec(
-		"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-		"booking-2", "alice", "", "nvidia.com/gpu", 1, "2026-03-01", "full", "2026-02-01T10:00:00Z", database.SourceReserved, "", 0, 24, 0,
+		"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		"booking-2", "alice", "", "nvidia.com/gpu", 1, "2026-03-01", "full", "2026-02-01T10:00:00Z", database.SourceReserved, "", 0, 24, 0, "unreserved",
 	)
 	db.Exec(
-		"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-		"booking-3", "bob", "", "nvidia.com/gpu", 2, "2026-02-01", "full", "2026-03-01T10:00:00Z", database.SourceReserved, "", 0, 24, 0,
+		"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		"booking-3", "bob", "", "nvidia.com/gpu", 2, "2026-02-01", "full", "2026-03-01T10:00:00Z", database.SourceReserved, "", 0, 24, 0, "unreserved",
 	)
 
 	// Sort by date descending

@@ -47,7 +47,8 @@ func TestGPUSpecByType(t *testing.T) {
 }
 
 func TestGetConfig(t *testing.T) {
-	cfg := GetConfig(30)
+	tenants := []string{"unreserved", "tenanta"}
+	cfg := GetConfig(30, tenants)
 	if cfg.BookingWindowDays != 30 {
 		t.Errorf("BookingWindowDays = %d, want 30", cfg.BookingWindowDays)
 	}
@@ -60,6 +61,12 @@ func TestGetConfig(t *testing.T) {
 	}
 	if cfg.TotalMemory != gpuCfg.TotalMemory {
 		t.Errorf("TotalMemory = %d, want %d", cfg.TotalMemory, gpuCfg.TotalMemory)
+	}
+	if cfg.DefaultTenant != "unreserved" {
+		t.Errorf("DefaultTenant = %q, want %q", cfg.DefaultTenant, "unreserved")
+	}
+	if len(cfg.Tenants) != 2 {
+		t.Errorf("Tenants = %v, want 2 entries", cfg.Tenants)
 	}
 }
 
@@ -103,9 +110,9 @@ func TestInsertAndQueryBooking(t *testing.T) {
 	defer Close()
 
 	_, err := DB().Exec(
-		"INSERT INTO bookings ("+BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		"INSERT INTO bookings ("+BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
 		"booking-1", "alice", "alice@test.com", "nvidia.com/gpu", 0,
-		"2025-04-24", "full", "2025-04-24T00:00:00Z", "reserved", "test booking", 0, 24, 0,
+		"2025-04-24", "full", "2025-04-24T00:00:00Z", "reserved", "test booking", 0, 24, 0, "unreserved",
 	)
 	if err != nil {
 		t.Fatalf("Insert: %v", err)
@@ -145,8 +152,8 @@ func TestUniqueConstraint(t *testing.T) {
 	}
 	defer Close()
 
-	insert := "INSERT INTO bookings (" + BookingColumns + ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
-	args := []any{"booking-1", "alice", "", "nvidia.com/gpu", 0, "2025-04-24", "full", "now", "reserved", "", 0, 24, 0}
+	insert := "INSERT INTO bookings (" + BookingColumns + ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+	args := []any{"booking-1", "alice", "", "nvidia.com/gpu", 0, "2025-04-24", "full", "now", "reserved", "", 0, 24, 0, "unreserved"}
 
 	if _, err := DB().Exec(insert, args...); err != nil {
 		t.Fatalf("first insert: %v", err)

@@ -131,7 +131,7 @@ describe('useConfig', () => {
       resources: [{ name: 'Test GPU', type: 'test/gpu', count: 4, share: 0.1, gpuEquivalent: 2.0 }],
       bookingWindowDays: 60,
       totalCpu: 128,
-      totalMemory: 2048,
+      totalMemory: 2048, tenants: [], defaultTenant: "",
     });
 
     const { result, waitForNextUpdate } = renderHook(() => useConfig());
@@ -164,7 +164,7 @@ describe('useConfig', () => {
       resources: [],
       bookingWindowDays: 14,
       totalCpu: 64,
-      totalMemory: 1024,
+      totalMemory: 1024, tenants: [], defaultTenant: "",
     });
 
     const { result, waitForNextUpdate } = renderHook(() => useConfig());

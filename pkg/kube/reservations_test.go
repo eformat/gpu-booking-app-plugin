@@ -21,8 +21,8 @@ func insertBooking(t *testing.T, id, user, resource string, slotIndex int, date 
 	t.Helper()
 	db := database.DB()
 	_, err := db.Exec(
-		"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-		id, user, "", resource, slotIndex, date, "full", "now", database.SourceReserved, "", startHour, endHour, utcOffset,
+		"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		id, user, "", resource, slotIndex, date, "full", "now", database.SourceReserved, "", startHour, endHour, utcOffset, "unreserved",
 	)
 	if err != nil {
 		t.Fatalf("insertBooking %s: %v", id, err)
@@ -38,7 +38,7 @@ func TestActiveReservations_UTC_FullDay(t *testing.T) {
 
 	// At May 4 12:00 UTC — should be active.
 	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
-	res, err := getActiveReservationsAt(now)
+	res, err := getActiveReservationsAt(now, "unreserved")
 	if err != nil {
 		t.Fatalf("getActiveReservationsAt: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestActiveReservations_UTC_FullDay_Expired(t *testing.T) {
 	insertBooking(t, "b1", "alice", "nvidia.com/gpu", 0, "2026-05-04", 0, 24, 0)
 
 	now := time.Date(2026, 5, 5, 1, 0, 0, 0, time.UTC)
-	res, err := getActiveReservationsAt(now)
+	res, err := getActiveReservationsAt(now, "unreserved")
 	if err != nil {
 		t.Fatalf("getActiveReservationsAt: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestActiveReservations_AEST_FullDay(t *testing.T) {
 
 	// At May 3 22:00 UTC (= May 4 08:00 AEST) — should be active.
 	now := time.Date(2026, 5, 3, 22, 0, 0, 0, time.UTC)
-	res, err := getActiveReservationsAt(now)
+	res, err := getActiveReservationsAt(now, "unreserved")
 	if err != nil {
 		t.Fatalf("getActiveReservationsAt: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestActiveReservations_AEST_NotYetActive(t *testing.T) {
 	insertBooking(t, "b1", "bob", "nvidia.com/gpu", 0, "2026-05-04", 0, 24, 10)
 
 	now := time.Date(2026, 5, 3, 13, 0, 0, 0, time.UTC)
-	res, err := getActiveReservationsAt(now)
+	res, err := getActiveReservationsAt(now, "unreserved")
 	if err != nil {
 		t.Fatalf("getActiveReservationsAt: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestActiveReservations_EST_FullDay(t *testing.T) {
 
 	// At May 4 10:00 UTC (= May 4 05:00 EST) — should be active.
 	now := time.Date(2026, 5, 4, 10, 0, 0, 0, time.UTC)
-	res, err := getActiveReservationsAt(now)
+	res, err := getActiveReservationsAt(now, "unreserved")
 	if err != nil {
 		t.Fatalf("getActiveReservationsAt: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestActiveReservations_EST_FullDay(t *testing.T) {
 
 	// At May 4 04:00 UTC (= May 3 23:00 EST) — should NOT be active yet.
 	now = time.Date(2026, 5, 4, 4, 0, 0, 0, time.UTC)
-	res, err = getActiveReservationsAt(now)
+	res, err = getActiveReservationsAt(now, "unreserved")
 	if err != nil {
 		t.Fatalf("getActiveReservationsAt: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestActiveReservations_PartialDay_CrossMidnight(t *testing.T) {
 
 	// At May 4 03:00 UTC (= May 4 13:00 AEST) — should be active.
 	now := time.Date(2026, 5, 4, 3, 0, 0, 0, time.UTC)
-	res, err := getActiveReservationsAt(now)
+	res, err := getActiveReservationsAt(now, "unreserved")
 	if err != nil {
 		t.Fatalf("getActiveReservationsAt: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestActiveReservations_PartialDay_CrossMidnight(t *testing.T) {
 
 	// At May 3 22:00 UTC (= before 9am AEST, which is 23:00 UTC) — NOT active.
 	now = time.Date(2026, 5, 3, 22, 0, 0, 0, time.UTC)
-	res, err = getActiveReservationsAt(now)
+	res, err = getActiveReservationsAt(now, "unreserved")
 	if err != nil {
 		t.Fatalf("getActiveReservationsAt: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestActiveReservations_PartialDay_CrossMidnight(t *testing.T) {
 
 	// At May 4 07:30 UTC (= after 5pm AEST which is 07:00 UTC) — NOT active.
 	now = time.Date(2026, 5, 4, 7, 30, 0, 0, time.UTC)
-	res, err = getActiveReservationsAt(now)
+	res, err = getActiveReservationsAt(now, "unreserved")
 	if err != nil {
 		t.Fatalf("getActiveReservationsAt: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestActiveReservations_MultipleUsers_DifferentTZ(t *testing.T) {
 
 	// At May 4 10:00 UTC — both should be active (AEST window: 14:00-14:00, EST: 05:00-05:00)
 	now := time.Date(2026, 5, 4, 10, 0, 0, 0, time.UTC)
-	res, err := getActiveReservationsAt(now)
+	res, err := getActiveReservationsAt(now, "unreserved")
 	if err != nil {
 		t.Fatalf("getActiveReservationsAt: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestActiveReservations_MultipleUsers_DifferentTZ(t *testing.T) {
 
 	// At May 4 15:00 UTC — only EST should be active (AEST expired at 14:00)
 	now = time.Date(2026, 5, 4, 15, 0, 0, 0, time.UTC)
-	res, err = getActiveReservationsAt(now)
+	res, err = getActiveReservationsAt(now, "unreserved")
 	if err != nil {
 		t.Fatalf("getActiveReservationsAt: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestActiveReservations_MultipleSlots_SameUser(t *testing.T) {
 	insertBooking(t, "b2", "alice", "nvidia.com/gpu", 1, "2026-05-04", 0, 24, 0)
 
 	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
-	res, err := getActiveReservationsAt(now)
+	res, err := getActiveReservationsAt(now, "unreserved")
 	if err != nil {
 		t.Fatalf("getActiveReservationsAt: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestActiveReservations_UntilTimestamp(t *testing.T) {
 	insertBooking(t, "b1", "bob", "nvidia.com/gpu", 0, "2026-05-04", 0, 24, 10)
 
 	now := time.Date(2026, 5, 4, 10, 0, 0, 0, time.UTC)
-	res, err := getActiveReservationsAt(now)
+	res, err := getActiveReservationsAt(now, "unreserved")
 	if err != nil {
 		t.Fatalf("getActiveReservationsAt: %v", err)
 	}
@@ -254,15 +254,15 @@ func TestActiveReservations_ConsumedBookingsIgnored(t *testing.T) {
 	db := database.DB()
 	// Insert a consumed booking (should be ignored by getActiveReservationsAt)
 	_, err := db.Exec(
-		"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-		"c1", "kueue-user", "", "nvidia.com/gpu", 0, "2026-05-04", "full", "now", database.SourceConsumed, "", 0, 24, 0,
+		"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		"c1", "kueue-user", "", "nvidia.com/gpu", 0, "2026-05-04", "full", "now", database.SourceConsumed, "", 0, 24, 0, "unreserved",
 	)
 	if err != nil {
 		t.Fatalf("insert consumed: %v", err)
 	}
 
 	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
-	res, err := getActiveReservationsAt(now)
+	res, err := getActiveReservationsAt(now, "unreserved")
 	if err != nil {
 		t.Fatalf("getActiveReservationsAt: %v", err)
 	}
@@ -275,7 +275,7 @@ func TestActiveReservations_Empty(t *testing.T) {
 	setupTestDB(t)
 
 	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
-	res, err := getActiveReservationsAt(now)
+	res, err := getActiveReservationsAt(now, "unreserved")
 	if err != nil {
 		t.Fatalf("getActiveReservationsAt: %v", err)
 	}
@@ -293,7 +293,7 @@ func TestActiveReservations_IST_HalfHourOffset(t *testing.T) {
 
 	// At May 3 22:00 UTC (= May 4 03:30 IST) — should be active.
 	now := time.Date(2026, 5, 3, 22, 0, 0, 0, time.UTC)
-	res, err := getActiveReservationsAt(now)
+	res, err := getActiveReservationsAt(now, "unreserved")
 	if err != nil {
 		t.Fatalf("getActiveReservationsAt: %v", err)
 	}
@@ -306,7 +306,7 @@ func TestActiveReservations_IST_HalfHourOffset(t *testing.T) {
 
 	// At May 3 18:00 UTC (30 minutes before UTC window opens) — should NOT be active.
 	now = time.Date(2026, 5, 3, 18, 0, 0, 0, time.UTC)
-	res, err = getActiveReservationsAt(now)
+	res, err = getActiveReservationsAt(now, "unreserved")
 	if err != nil {
 		t.Fatalf("getActiveReservationsAt: %v", err)
 	}
@@ -316,7 +316,7 @@ func TestActiveReservations_IST_HalfHourOffset(t *testing.T) {
 
 	// Verify Until timestamp = May 4 18:30 UTC.
 	now = time.Date(2026, 5, 4, 10, 0, 0, 0, time.UTC)
-	res, err = getActiveReservationsAt(now)
+	res, err = getActiveReservationsAt(now, "unreserved")
 	if err != nil {
 		t.Fatalf("getActiveReservationsAt: %v", err)
 	}

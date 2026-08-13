@@ -10,7 +10,7 @@ export interface BookingsState {
   fetchBookings: () => Promise<void>;
 }
 
-export function useBookings(): BookingsState {
+export function useBookings(tenant?: string): BookingsState {
   const [bookings, setBookings] = React.useState<Booking[]>([]);
   const [activeReservations, setActiveReservations] = React.useState<Record<string, string>>({});
   const [currentUser, setCurrentUser] = React.useState('');
@@ -18,7 +18,7 @@ export function useBookings(): BookingsState {
 
   const fetchBookings = React.useCallback(async () => {
     try {
-      const result = await getBookings();
+      const result = await getBookings(tenant);
       setBookings(result.bookings || []);
       setActiveReservations(result.activeReservations || {});
       setCurrentUser(result.currentUser || '');
@@ -26,7 +26,7 @@ export function useBookings(): BookingsState {
       console.warn('Failed to fetch bookings:', e);
     }
     setLoading(false);
-  }, []);
+  }, [tenant]);
 
   React.useEffect(() => {
     fetchBookings();
@@ -40,11 +40,15 @@ export function useBookings(): BookingsState {
 export interface ConfigState {
   gpuResources: GPUResource[];
   bookingWindowDays: number;
+  tenants: string[];
+  defaultTenant: string;
 }
 
 export function useConfig(): ConfigState {
   const [gpuResources, setGpuResources] = React.useState<GPUResource[]>(FALLBACK_GPU_RESOURCES);
   const [bookingWindowDays, setBookingWindowDays] = React.useState(DEFAULT_BOOKING_WINDOW_DAYS);
+  const [tenants, setTenants] = React.useState<string[]>([]);
+  const [defaultTenant, setDefaultTenant] = React.useState('');
 
   React.useEffect(() => {
     getConfig()
@@ -53,13 +57,15 @@ export function useConfig(): ConfigState {
         if (Array.isArray(data.resources) && data.resources.length > 0) {
           setGpuResources(data.resources);
         }
+        if (Array.isArray(data.tenants)) setTenants(data.tenants);
+        if (data.defaultTenant) setDefaultTenant(data.defaultTenant);
       })
       .catch((e) => {
         console.warn('Failed to fetch config:', e);
       });
   }, []);
 
-  return { gpuResources, bookingWindowDays };
+  return { gpuResources, bookingWindowDays, tenants, defaultTenant };
 }
 
 export interface PreemptedWorkloadsState {
