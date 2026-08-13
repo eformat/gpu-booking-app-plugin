@@ -155,9 +155,66 @@ func syncReservationsForTenant(tenant TenantConfig) {
 		slog.Error("reservation sync: failed to update cohort", "tenant", tenant.CohortName, "error", err)
 	}
 
+	if err := applyTenantUnreservedCQ(tenant); err != nil {
+		slog.Error("reservation sync: failed to apply unreserved CQ", "tenant", tenant.CohortName, "error", err)
+	}
+
 	if len(reservations) > 0 {
 		slog.Info("reservation sync: applied user reservations", "tenant", tenant.CohortName, "count", len(reservations))
 	}
+}
+
+// applyTenantUnreservedCQ creates/updates the per-tenant unreserved ClusterQueue.
+// This CQ sits inside the tenant's cohort so that unreserved workloads (via the
+// 'unreserved' LocalQueue) can be preempted by reserved workloads in the same cohort.
+func applyTenantUnreservedCQ(tenant TenantConfig) error {
+	name := tenant.CohortName + "-unreserved"
+	cfg := database.GetGPUConfig()
+
+	coveredResources := []string{"cpu", "memory"}
+	quotaResources := []map[string]any{
+		{"name": "cpu", "nominalQuota": "0"},
+		{"name": "memory", "nominalQuota": "0Gi"},
+	}
+	for _, spec := range cfg.Resources {
+		coveredResources = append(coveredResources, spec.Type)
+		quotaResources = append(quotaResources, map[string]any{
+			"name": spec.Type, "nominalQuota": "0",
+		})
+	}
+
+	cq := map[string]any{
+		"apiVersion": "kueue.x-k8s.io/v1beta1",
+		"kind":       "ClusterQueue",
+		"metadata":   map[string]any{"name": name},
+		"spec": map[string]any{
+			"cohort":           tenant.CohortName,
+			"namespaceSelector": map[string]any{},
+			"preemption": map[string]any{
+				"reclaimWithinCohort": "Never",
+				"borrowWithinCohort":  map[string]any{"policy": "LowerPriority"},
+				"withinClusterQueue":  "LowerPriority",
+			},
+			"flavorFungibility": map[string]any{
+				"whenCanBorrow":  "Borrow",
+				"whenCanPreempt": "TryNextFlavor",
+			},
+			"queueingStrategy": "BestEffortFIFO",
+			"stopPolicy":       "None",
+			"resourceGroups": []map[string]any{
+				{
+					"coveredResources": coveredResources,
+					"flavors": []map[string]any{
+						{
+							"name":      tenantFlavorName(tenant),
+							"resources": quotaResources,
+						},
+					},
+				},
+			},
+		},
+	}
+	return k8sApply("/apis/kueue.x-k8s.io/v1beta1/clusterqueues/"+name, cq)
 }
 
 func getActiveReservations(tenant string) ([]userReservation, error) {
