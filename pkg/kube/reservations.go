@@ -145,7 +145,7 @@ func syncReservationsForTenant(tenant TenantConfig) {
 
 	activeUsers := map[string]bool{}
 	for _, res := range reservations {
-		activeUsers[tenant.NamespacePrefix+sanitizeK8sName(res.User)] = true
+		activeUsers[sanitizeK8sName(res.User)] = true
 	}
 	if err := removeStaleReservations(activeUsers, tenant.NamespacePrefix); err != nil {
 		slog.Error("reservation sync: failed to remove stale", "tenant", tenant.CohortName, "error", err)
@@ -276,7 +276,7 @@ func normalizedResourceID(resource string) string {
 }
 
 func applyUserReservation(res userReservation, tenant TenantConfig) error {
-	ns := tenant.NamespacePrefix + sanitizeK8sName(res.User)
+	ns := sanitizeK8sName(res.User)
 	untilStr := strconv.FormatInt(res.Until, 10)
 
 	coveredResources := []string{"cpu", "memory"}
