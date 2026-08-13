@@ -192,7 +192,6 @@ func applyTenantUnreservedCQ(tenant TenantConfig) error {
 			"namespaceSelector": map[string]any{},
 			"preemption": map[string]any{
 				"reclaimWithinCohort": "Never",
-				"borrowWithinCohort":  map[string]any{"policy": "LowerPriority"},
 				"withinClusterQueue":  "LowerPriority",
 			},
 			"flavorFungibility": map[string]any{
