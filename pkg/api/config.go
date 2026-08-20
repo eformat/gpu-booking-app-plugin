@@ -14,5 +14,15 @@ var (
 )
 
 func ConfigHandler(w http.ResponseWriter, r *http.Request) {
-	JsonResponse(w, database.GetConfig(BookingWindowDays, TenantNames))
+	user := GetUser(r)
+
+	// Restrict the tenant list to just the user's own tenant so the UI
+	// selector only shows (and locks to) their tenant. Unprefixed users
+	// (e.g. cluster-admin "admin") see all tenants.
+	tenants := TenantNames
+	if locked := tenantFromUsername(user.Username); locked != "" {
+		tenants = []string{locked}
+	}
+
+	JsonResponse(w, database.GetConfig(BookingWindowDays, tenants))
 }
