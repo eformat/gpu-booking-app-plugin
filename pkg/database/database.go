@@ -131,10 +131,14 @@ func Init(dbPath string) error {
 
 func OpenDB(dbPath string) error {
 	var err error
-	db, err = sql.Open("sqlite3", dbPath+"?_journal_mode=WAL")
+	db, err = sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000&_synchronous=NORMAL")
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)
 	}
+	// Single connection required: SQLite doesn't support concurrent writes
+	// and using multiple connections causes visibility issues between goroutines.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS bookings (

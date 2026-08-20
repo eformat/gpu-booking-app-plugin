@@ -376,6 +376,17 @@ func getBookingDates() []string {
 func syncBookings(usages []resourceUsage, dates []string, tenant string) error {
 	db := database.DB()
 
+	// Use an explicit BEGIN IMMEDIATE transaction so the SELECT that builds
+	// the existing-bookings map and the subsequent INSERTs share the same
+	// write-locked transaction. Without this, SQLite WAL deferred transactions
+	// can start on different WAL snapshots, making inserts invisible to the
+	// next SELECT within the same sync cycle.
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning sync transaction: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
 	type bookingKey struct {
 		resource  string
 		slotIndex int
@@ -416,7 +427,7 @@ func syncBookings(usages []resourceUsage, dates []string, tenant string) error {
 			reserved := map[int]bool{}
 			slotUser := map[int]string{}
 			perUser := map[string]int{}
-			rows, err := db.Query(
+			rows, err := tx.Query(
 				"SELECT slot_index, user FROM bookings WHERE resource = ? AND date = ? AND source = ? AND tenant = ?",
 				resource, date, database.SourceReserved, tenant,
 			)
@@ -521,7 +532,7 @@ func syncBookings(usages []resourceUsage, dates []string, tenant string) error {
 	}
 
 	// Fetch only this tenant's consumed bookings — critical to avoid cross-tenant deletions.
-	rows, err := db.Query(
+	rows, err := tx.Query(
 		"SELECT id, resource, slot_index, date, slot_type FROM bookings WHERE source = ? AND tenant = ?",
 		database.SourceConsumed, tenant,
 	)
@@ -538,6 +549,7 @@ func syncBookings(usages []resourceUsage, dates []string, tenant string) error {
 		var id, resource, date, slotType string
 		var slotIndex int
 		if err := rows.Scan(&id, &resource, &slotIndex, &date, &slotType); err != nil {
+			slog.Error("kueue sync: scan error", "tenant", tenant, "error", err)
 			continue
 		}
 		existing[id] = true
@@ -550,7 +562,7 @@ func syncBookings(usages []resourceUsage, dates []string, tenant string) error {
 	}
 
 	for _, id := range toRemove {
-		db.Exec("DELETE FROM bookings WHERE id = ? AND source = ? AND tenant = ?", id, database.SourceConsumed, tenant)
+		tx.Exec("DELETE FROM bookings WHERE id = ? AND source = ? AND tenant = ?", id, database.SourceConsumed, tenant)
 	}
 	if len(toRemove) > 0 {
 		slog.Info("kueue sync: removed stale bookings", "tenant", tenant, "count", len(toRemove))
@@ -568,7 +580,7 @@ func syncBookings(usages []resourceUsage, dates []string, tenant string) error {
 
 		// Check if a reserved booking for this tenant occupies this slot
 		var reservedUser string
-		err := db.QueryRow(
+		err := tx.QueryRow(
 			"SELECT user FROM bookings WHERE resource = ? AND slot_index = ? AND date = ? AND slot_type IN (?, ?) AND source = ? AND tenant = ?",
 			key.resource, key.slotIndex, key.date, database.SlotTypeFull, key.slotType, database.SourceReserved, tenant,
 		).Scan(&reservedUser)
@@ -577,7 +589,7 @@ func syncBookings(usages []resourceUsage, dates []string, tenant string) error {
 			continue
 		}
 
-		_, err = db.Exec(
+		_, err = tx.Exec(
 			"INSERT OR IGNORE INTO bookings (id, user, email, resource, slot_index, date, slot_type, created_at, source, description, start_hour, end_hour, utc_offset, tenant) VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, '', 0, 24, 0, ?)",
 			id, user, key.resource, key.slotIndex, key.date, key.slotType, createdAt, database.SourceConsumed, tenant,
 		)
@@ -586,6 +598,10 @@ func syncBookings(usages []resourceUsage, dates []string, tenant string) error {
 			continue
 		}
 		added++
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing sync transaction: %w", err)
 	}
 
 	if added > 0 || len(toRemove) > 0 {

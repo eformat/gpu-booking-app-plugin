@@ -78,22 +78,52 @@ func TestGetBookings_TenantDefault(t *testing.T) {
 }
 
 func TestResolveTenant(t *testing.T) {
-	TenantNames = []string{"tenanta", "tenantb"}
+	TenantNames = []string{"t1", "t2", "t99"}
 	t.Cleanup(func() { TenantNames = nil })
 
 	tests := []struct {
-		url  string
-		want string
+		url      string
+		username string
+		want     string
 	}{
-		{"/bookings?tenant=tenanta", "tenanta"},
-		{"/bookings?tenant=tenantb", "tenantb"},
-		{"/bookings?tenant=unknown", "tenanta"}, // unknown → first configured
-		{"/bookings", "tenanta"},                // no param → first configured
+		// Unprefixed user (cluster-admin) can specify any tenant
+		{"/bookings?tenant=t1", "admin", "t1"},
+		{"/bookings?tenant=t99", "admin", "t99"},
+		{"/bookings?tenant=unknown", "admin", "t1"}, // unknown → first configured
+		{"/bookings", "admin", "t1"},               // no param → first configured
+
+		// Tenant-prefixed users are locked to their tenant regardless of ?tenant=
+		{"/bookings?tenant=t1", "t99-admin", "t99"},  // t1 requested but locked to t99
+		{"/bookings?tenant=t2", "t99-user1", "t99"},  // locked to t99
+		{"/bookings", "t1-user1", "t1"},              // derives t1 from username
+		{"/bookings?tenant=t99", "t2-user2", "t2"},   // locked to t2
 	}
 	for _, tt := range tests {
 		req := httptest.NewRequest(http.MethodGet, tt.url, nil)
+		req = reqWithUser(req, &UserInfo{Username: tt.username, IsAdmin: true})
 		if got := resolveTenant(req); got != tt.want {
-			t.Errorf("resolveTenant(%q) = %q, want %q", tt.url, got, tt.want)
+			t.Errorf("resolveTenant(%q, user=%q) = %q, want %q", tt.url, tt.username, got, tt.want)
+		}
+	}
+}
+
+func TestTenantFromUsername(t *testing.T) {
+	TenantNames = []string{"t1", "t99"}
+	t.Cleanup(func() { TenantNames = nil })
+
+	tests := []struct{ username, want string }{
+		{"t1-user1", "t1"},
+		{"t1-user2", "t1"},
+		{"t1-admin", "t1"},
+		{"t99-admin", "t99"},
+		{"t99-user1", "t99"},
+		{"admin", ""},          // no prefix
+		{"user1", ""},          // no matching tenant prefix
+		{"t50-user1", ""},      // t50 not in TenantNames
+	}
+	for _, tt := range tests {
+		if got := tenantFromUsername(tt.username); got != tt.want {
+			t.Errorf("tenantFromUsername(%q) = %q, want %q", tt.username, got, tt.want)
 		}
 	}
 }

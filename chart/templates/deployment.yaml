@@ -52,6 +52,15 @@ spec:
             {{- if .Values.kueue.tenants }}
             - name: KUEUE_TENANTS
               value: {{ .Values.kueue.tenants | quote }}
+            {{- else if .Values.kueue.tenantCount }}
+            {{- $tenantList := list }}
+            {{- range $i := until (int .Values.kueue.tenantCount) }}
+            {{- $n := add1 $i }}
+            {{- $t := printf "%s%d" $.Values.kueue.tenantPrefix $n }}
+            {{- $tenantList = append $tenantList (printf "%s:%s-:%s" $t $t $.Values.kueue.tenantFlavor) }}
+            {{- end }}
+            - name: KUEUE_TENANTS
+              value: {{ join "," $tenantList | quote }}
             {{- end }}
             - name: GPU_DISCOVERY_ENABLED
               value: {{ .Values.gpuDiscovery.enabled | quote }}

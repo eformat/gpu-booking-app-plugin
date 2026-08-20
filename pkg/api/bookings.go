@@ -6,17 +6,42 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/eformat/gpu-booking-plugin/pkg/database"
 	"github.com/eformat/gpu-booking-plugin/pkg/kube"
 )
 
-// resolveTenant returns the tenant for a request. Uses the ?tenant= query param
-// when present; falls back to the first configured tenant (single-tenant compat).
+// tenantFromUsername derives a tenant name from a username by stripping the
+// first hyphen-separated segment when it matches a known tenant.
+// e.g. "t99-admin" → "t99", "t1-user1" → "t1", "admin" → "".
+func tenantFromUsername(username string) string {
+	if idx := strings.Index(username, "-"); idx > 0 {
+		prefix := username[:idx]
+		for _, name := range TenantNames {
+			if name == prefix {
+				return prefix
+			}
+		}
+	}
+	return ""
+}
+
+// resolveTenant returns the tenant for a request.
+// Users whose username has a tenant prefix (e.g. "t99-admin") are locked to
+// that tenant regardless of the ?tenant= param — cross-tenant reads are blocked.
+// Users without a tenant prefix (e.g. "admin") may freely specify ?tenant=.
 func resolveTenant(r *http.Request) string {
+	user := GetUser(r)
+
+	// Lock prefixed users (t{n}-admin, t{n}-user1, etc.) to their tenant.
+	if locked := tenantFromUsername(user.Username); locked != "" {
+		return locked
+	}
+
+	// Unprefixed users (cluster-admin, legacy "admin") may pick any tenant.
 	if t := r.URL.Query().Get("tenant"); t != "" {
-		// Validate the requested tenant exists
 		for _, name := range TenantNames {
 			if name == t {
 				return t

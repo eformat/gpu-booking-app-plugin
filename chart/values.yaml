@@ -42,10 +42,13 @@ kueue:
   syncEnabled: true
   syncIntervalSeconds: 30
   syncDays: 7
-  # tenants: comma-separated "cohortName:namespacePrefix" pairs for multi-tenancy.
-  # Example: "tenanta:tenanta-user-,tenantb:tenantb-user-"
-  # Defaults to single-tenant mode (unreserved cohort, user- prefix).
-  tenants: ""  # format: "cohort:namespacePrefix:flavorName,..." e.g. "tenanta:tenanta-:gb200-tenanta"
+  # tenants: manual override (takes precedence over count-based generation).
+  # format: "cohort:namespacePrefix:flavorName,..." e.g. "t1:t1-:gb200,t2:t2-:gb200"
+  tenants: ""
+  # count-based tenant generation (used when tenants is empty)
+  tenantCount: 0
+  tenantPrefix: "t"
+  tenantFlavor: "gb200"
 
 bookingWindowDays: 30
 
