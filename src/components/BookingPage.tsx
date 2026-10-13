@@ -78,7 +78,7 @@ const BookingPage: React.FC = () => {
   React.useEffect(() => {
     if (!showingMyBookings || !currentUser) return;
     const myBookings = bookings.filter(
-      (b) => b.user === currentUser && b.source === 'reserved' && selectedResources.includes(b.resource),
+      (b) => (b.user === currentUser || b.email === currentUser) && b.source === 'reserved' && selectedResources.includes(b.resource),
     );
     const myDates = Array.from(new Set(myBookings.map((b) => b.date))).sort();
     if (myDates.length === 0) {
@@ -171,7 +171,7 @@ const BookingPage: React.FC = () => {
       setSelectedDates([todayStr()]);
       return;
     }
-    const myBookings = bookings.filter((b) => b.user === currentUser && b.source === 'reserved');
+    const myBookings = bookings.filter((b) => (b.user === currentUser || b.email === currentUser) && b.source === 'reserved');
     const myDates = Array.from(new Set(myBookings.map((b) => b.date))).sort();
     if (myDates.length === 0) return;
     const myResourceTypes = Array.from(new Set(myBookings.map((b) => b.resource)));
@@ -186,7 +186,7 @@ const BookingPage: React.FC = () => {
   const handleCancelAll = async () => {
     if (!currentUser) return;
     const ids = bookings
-      .filter((b) => b.user === currentUser && b.source === 'reserved' && selectedResources.includes(b.resource))
+      .filter((b) => (b.user === currentUser || b.email === currentUser) && b.source === 'reserved' && selectedResources.includes(b.resource))
       .map((b) => b.id);
     if (ids.length === 0) return;
     setCancellingAll(true);
@@ -204,7 +204,7 @@ const BookingPage: React.FC = () => {
   const cancelAllCount = React.useMemo(() => {
     if (!currentUser) return 0;
     return bookings.filter(
-      (b) => b.user === currentUser && b.source === 'reserved' && selectedResources.includes(b.resource),
+      (b) => (b.user === currentUser || b.email === currentUser) && b.source === 'reserved' && selectedResources.includes(b.resource),
     ).length;
   }, [bookings, currentUser, selectedResources]);
 

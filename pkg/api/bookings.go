@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -22,9 +23,10 @@ var namespaceExistsFn = func(ns string) (bool, error) {
 	return kube.NamespaceExists(ns)
 }
 
-// validateSystemBookingTarget validates a system booking target namespace.
-// Returns an error message key and HTTP status on failure, or "" on success.
-func validateSystemBookingTarget(target string) (string, int) {
+// validateSystemBookingTarget validates a system booking target namespace and
+// that the user may administer it. Returns an error message and HTTP status on
+// failure, or "" on success.
+func validateSystemBookingTarget(ctx context.Context, user *UserInfo, target string) (string, int) {
 	if !IsValidK8sName(target) {
 		return "invalid_namespace", http.StatusBadRequest
 	}
@@ -36,7 +38,46 @@ func validateSystemBookingTarget(target string) (string, int) {
 	if !exists {
 		return "namespace_not_found", http.StatusBadRequest
 	}
+	allowed, err := namespaceAdminFn(ctx, user, target)
+	if err != nil {
+		slog.Error("namespace admin check failed", "namespace", target, "user", user.Username, "error", err)
+		return "namespace_check_failed", http.StatusInternalServerError
+	}
+	if !allowed {
+		return fmt.Sprintf("you are not an admin of namespace %s", target), http.StatusForbidden
+	}
 	return "", 0
+}
+
+// canManageBooking reports whether the user may cancel/delete the booking
+// owned by owner and created by createdBy. Allowed for the booking owner, its
+// creator, and cluster admins. System bookings (createdBy non-empty: owner is
+// the target namespace, creator is stored in the email column) may also be
+// managed by admins of the owning namespace. nsAdminCache memoizes
+// namespace-admin lookups across calls (bulk cancel); may be nil.
+func canManageBooking(ctx context.Context, user *UserInfo, owner, createdBy string, nsAdminCache map[string]bool) bool {
+	if user.IsAdmin || owner == user.Username || (createdBy != "" && createdBy == user.Username) {
+		return true
+	}
+	// Namespace-admin rights only apply to system bookings (createdBy set);
+	// user bookings remain manageable by owner and cluster admins only.
+	if createdBy == "" {
+		return false
+	}
+	if nsAdminCache != nil {
+		if cached, ok := nsAdminCache[owner]; ok {
+			return cached
+		}
+	}
+	allowed, err := namespaceAdminFn(ctx, user, owner)
+	if err != nil {
+		slog.Error("namespace admin check failed", "namespace", owner, "user", user.Username, "error", err)
+		allowed = false
+	}
+	if nsAdminCache != nil {
+		nsAdminCache[owner] = allowed
+	}
+	return allowed
 }
 
 func GetBookings(w http.ResponseWriter, r *http.Request) {
@@ -121,18 +162,15 @@ func CreateBooking(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// System booking: admin creating a reservation for a namespace (e.g. shared
-	// model-serving capacity) rather than for themselves. Only honored for admins.
+	// System booking: creating a reservation for a namespace (e.g. shared
+	// model-serving capacity) rather than for oneself. Allowed for cluster
+	// admins and admins of the target namespace.
 	bookingType := database.BookingTypeUser
 	bookingOwner := user.Username
 	createdBy := ""
 	if req.TargetNamespace != "" {
-		if !user.IsAdmin {
-			HttpError(w, http.StatusForbidden, "admin_required")
-			return
-		}
-		if key, status := validateSystemBookingTarget(req.TargetNamespace); key != "" {
-			HttpError(w, status, key)
+		if msg, status := validateSystemBookingTarget(ctx, user, req.TargetNamespace); msg != "" {
+			HttpError(w, status, msg)
 			return
 		}
 		bookingType = database.BookingTypeSystem
@@ -273,8 +311,8 @@ func DeleteBooking(w http.ResponseWriter, r *http.Request) {
 	user := GetUser(r)
 	db := database.DB()
 
-	var owner, source string
-	err := db.QueryRowContext(ctx, "SELECT user, source FROM bookings WHERE id = ?", id).Scan(&owner, &source)
+	var owner, source, createdBy string
+	err := db.QueryRowContext(ctx, "SELECT user, source, email FROM bookings WHERE id = ?", id).Scan(&owner, &source, &createdBy)
 	if err == sql.ErrNoRows {
 		HttpError(w, http.StatusNotFound, "not_found")
 		return
@@ -289,7 +327,7 @@ func DeleteBooking(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if owner != user.Username && !user.IsAdmin {
+	if !canManageBooking(ctx, user, owner, createdBy, nil) {
 		HttpError(w, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -332,11 +370,12 @@ func BulkCancelHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
+	nsAdminCache := map[string]bool{}
 	var deleted []string
 	var errors []string
 	for _, id := range req.IDs {
-		var owner, source string
-		err := tx.QueryRowContext(ctx, "SELECT user, source FROM bookings WHERE id = ?", id).Scan(&owner, &source)
+		var owner, source, createdBy string
+		err := tx.QueryRowContext(ctx, "SELECT user, source, email FROM bookings WHERE id = ?", id).Scan(&owner, &source, &createdBy)
 		if err == sql.ErrNoRows {
 			errors = append(errors, fmt.Sprintf("%s: not_found", id))
 			continue
@@ -349,7 +388,7 @@ func BulkCancelHandler(w http.ResponseWriter, r *http.Request) {
 			errors = append(errors, fmt.Sprintf("%s: consumed_booking", id))
 			continue
 		}
-		if owner != user.Username && !user.IsAdmin {
+		if !canManageBooking(ctx, user, owner, createdBy, nsAdminCache) {
 			errors = append(errors, fmt.Sprintf("%s: forbidden", id))
 			continue
 		}
@@ -400,18 +439,14 @@ func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// System booking: admin creating a reservation for a namespace rather than
-	// for themselves. Only honored for admins.
+	// System booking: creating a reservation for a namespace rather than for
+	// oneself. Allowed for cluster admins and admins of the target namespace.
 	bookingType := database.BookingTypeUser
 	bookingOwner := user.Username
 	createdBy := ""
 	if req.TargetNamespace != "" {
-		if !user.IsAdmin {
-			HttpError(w, http.StatusForbidden, "admin_required")
-			return
-		}
-		if key, status := validateSystemBookingTarget(req.TargetNamespace); key != "" {
-			HttpError(w, status, key)
+		if msg, status := validateSystemBookingTarget(ctx, user, req.TargetNamespace); msg != "" {
+			HttpError(w, status, msg)
 			return
 		}
 		bookingType = database.BookingTypeSystem

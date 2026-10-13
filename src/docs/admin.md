@@ -97,11 +97,11 @@ Click any sortable column header to sort ascending; click again to reverse.
 
 ## System Bookings
 
-Administrators can create **system bookings** from the booking dialog on the Bookings page -- reservations for a namespace that has no logged-in user (e.g. `prelude-maas` for shared MaaS model-serving capacity). See [Making Bookings](making-bookings) for creation details.
+Cluster administrators and **namespace administrators** (users who can create RoleBindings in the target namespace) can create **system bookings** from the booking dialog on the Bookings page -- reservations for a namespace rather than for themselves (e.g. `prelude-maas` for shared MaaS model-serving capacity). See [Making Bookings](making-bookings) for creation details.
 
-In the bookings table, system bookings show the **target namespace** in the User column with a blue **system** badge. The creating admin is recorded in the audit log and in the booking's email field.
+In the bookings table, system bookings show the **target namespace** in the User column with a blue **system** badge. The creating user is recorded in the audit log and in the booking's email field.
 
-To delete a system booking, use the table's **Delete** button like any other booking. System bookings are not shown under **My Bookings** -- use the table's text filter with the namespace name to find them quickly.
+To delete a system booking, use the table's **Delete** button like any other booking. The creator, any administrator of the target namespace, and cluster administrators may delete it. System bookings are not shown under **My Bookings** unless you created them -- use the table's text filter with the namespace name to find them quickly.
 
 ---
 

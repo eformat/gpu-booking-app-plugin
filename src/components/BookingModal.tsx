@@ -57,7 +57,7 @@ const BookingModal: React.FC<BookingModalProps> = ({
   onClose,
   onSubmit,
 }) => {
-  const { isAdmin, username } = useAuth();
+  const { username } = useAuth();
   const [resources, setResources] = React.useState<Record<string, number>>(
     editBooking ? { [editBooking.resource]: 1 } : {},
   );
@@ -214,7 +214,7 @@ const BookingModal: React.FC<BookingModalProps> = ({
             )}
           </FormGroup>
 
-          {isAdmin && !editBooking && (
+          {!editBooking && (
             <FormGroup label="Book as" fieldId="book-as">
               <Radio
                 id="book-as-self"
@@ -227,7 +227,7 @@ const BookingModal: React.FC<BookingModalProps> = ({
                 id="book-as-system"
                 name="book-as"
                 label="System namespace"
-                description="Reserve capacity for a namespace that has no logged-in user (e.g. model serving). Admin only."
+                description="Reserve capacity for a namespace rather than for yourself (e.g. shared model serving). You must be an administrator of the target namespace."
                 isChecked={bookAsSystem}
                 onChange={() => setBookAsSystem(true)}
               />

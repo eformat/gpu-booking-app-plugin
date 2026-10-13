@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -19,6 +20,17 @@ func withNamespaceChecker(t *testing.T, fn func(ns string) (bool, error)) {
 	orig := namespaceExistsFn
 	namespaceExistsFn = fn
 	t.Cleanup(func() { namespaceExistsFn = orig })
+}
+
+// withNamespaceAdminChecker overrides the namespace admin check for the
+// duration of a test and restores the original afterwards.
+func withNamespaceAdminChecker(t *testing.T, allowed bool, err error) {
+	t.Helper()
+	orig := namespaceAdminFn
+	namespaceAdminFn = func(_ context.Context, _ *UserInfo, _ string) (bool, error) {
+		return allowed, err
+	}
+	t.Cleanup(func() { namespaceAdminFn = orig })
 }
 
 func TestCreateBookingSystemByAdmin(t *testing.T) {
@@ -66,6 +78,7 @@ func TestCreateBookingSystemByAdmin(t *testing.T) {
 func TestCreateBookingSystemForbiddenForNonAdmin(t *testing.T) {
 	setupTestDB(t)
 	withNamespaceChecker(t, func(ns string) (bool, error) { return true, nil })
+	withNamespaceAdminChecker(t, false, nil)
 
 	date := time.Now().AddDate(0, 0, 1).Format("2006-01-02")
 	body := `{"resource":"nvidia.com/gpu","slotIndex":0,"date":"` + date + `","slotType":"full","targetNamespace":"prelude-maas"}`
@@ -79,11 +92,47 @@ func TestCreateBookingSystemForbiddenForNonAdmin(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusForbidden)
 	}
+	if !strings.Contains(w.Body.String(), "not an admin of namespace prelude-maas") {
+		t.Errorf("body = %s, want message naming the namespace", w.Body.String())
+	}
 
 	var count int
 	database.DB().QueryRow("SELECT COUNT(*) FROM bookings").Scan(&count)
 	if count != 0 {
 		t.Error("no booking should have been created for a non-admin")
+	}
+}
+
+func TestCreateBookingSystemByNamespaceAdmin(t *testing.T) {
+	setupTestDB(t)
+	withNamespaceChecker(t, func(ns string) (bool, error) { return true, nil })
+	withNamespaceAdminChecker(t, true, nil)
+
+	date := time.Now().AddDate(0, 0, 1).Format("2006-01-02")
+	body := `{"resource":"nvidia.com/gpu","slotIndex":0,"date":"` + date + `","slotType":"full","description":"team capacity","targetNamespace":"team-x"}`
+
+	req := httptest.NewRequest(http.MethodPost, "/bookings", strings.NewReader(body))
+	req = reqWithUser(req, &UserInfo{Username: "jdoe", IsAdmin: false})
+	w := httptest.NewRecorder()
+
+	CreateBooking(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body = %s", w.Code, http.StatusCreated, w.Body.String())
+	}
+
+	var b database.Booking
+	if err := json.NewDecoder(w.Body).Decode(&b); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if b.User != "team-x" {
+		t.Errorf("User = %q, want team-x (target namespace)", b.User)
+	}
+	if b.Email != "jdoe" {
+		t.Errorf("Email = %q, want jdoe (creating namespace admin)", b.Email)
+	}
+	if b.BookingType != database.BookingTypeSystem {
+		t.Errorf("BookingType = %q, want system", b.BookingType)
 	}
 }
 
@@ -153,6 +202,25 @@ func TestCreateBookingSystemNamespaceCheckFailed(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/bookings", strings.NewReader(body))
 	req = reqWithUser(req, testAdmin())
+	w := httptest.NewRecorder()
+
+	CreateBooking(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestCreateBookingSystemNamespaceAdminCheckFailed(t *testing.T) {
+	setupTestDB(t)
+	withNamespaceChecker(t, func(ns string) (bool, error) { return true, nil })
+	withNamespaceAdminChecker(t, false, fmt.Errorf("api down"))
+
+	date := time.Now().AddDate(0, 0, 1).Format("2006-01-02")
+	body := `{"resource":"nvidia.com/gpu","slotIndex":0,"date":"` + date + `","slotType":"full","targetNamespace":"prelude-maas"}`
+
+	req := httptest.NewRequest(http.MethodPost, "/bookings", strings.NewReader(body))
+	req = reqWithUser(req, testUser())
 	w := httptest.NewRecorder()
 
 	CreateBooking(w, req)
@@ -325,6 +393,7 @@ func TestBulkBookingSystemByAdmin(t *testing.T) {
 func TestBulkBookingSystemForbiddenForNonAdmin(t *testing.T) {
 	setupTestDB(t)
 	withNamespaceChecker(t, func(ns string) (bool, error) { return true, nil })
+	withNamespaceAdminChecker(t, false, nil)
 
 	start := time.Now().AddDate(0, 0, 1).Format("2006-01-02")
 	body := `{"resources":{"nvidia.com/gpu":1},"startDate":"` + start + `","endDate":"` + start + `","startHour":0,"endHour":24,"targetNamespace":"prelude-maas"}`
@@ -346,8 +415,47 @@ func TestBulkBookingSystemForbiddenForNonAdmin(t *testing.T) {
 	}
 }
 
+func TestBulkBookingSystemByNamespaceAdmin(t *testing.T) {
+	setupTestDB(t)
+	withNamespaceChecker(t, func(ns string) (bool, error) { return true, nil })
+	withNamespaceAdminChecker(t, true, nil)
+
+	start := time.Now().AddDate(0, 0, 1).Format("2006-01-02")
+	body := `{"resources":{"nvidia.com/gpu":2},"startDate":"` + start + `","endDate":"` + start + `","description":"team capacity","startHour":0,"endHour":24,"targetNamespace":"team-x"}`
+
+	req := httptest.NewRequest(http.MethodPost, "/bookings/bulk", strings.NewReader(body))
+	req = reqWithUser(req, &UserInfo{Username: "jdoe", IsAdmin: false})
+	w := httptest.NewRecorder()
+
+	BulkBookingHandler(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body = %s", w.Code, http.StatusCreated, w.Body.String())
+	}
+
+	var resp struct {
+		Bookings []database.Booking `json:"bookings"`
+	}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if len(resp.Bookings) != 2 {
+		t.Fatalf("bookings = %d, want 2", len(resp.Bookings))
+	}
+	for _, b := range resp.Bookings {
+		if b.User != "team-x" {
+			t.Errorf("User = %q, want team-x", b.User)
+		}
+		if b.Email != "jdoe" {
+			t.Errorf("Email = %q, want jdoe", b.Email)
+		}
+		if b.BookingType != database.BookingTypeSystem {
+			t.Errorf("BookingType = %q, want system", b.BookingType)
+		}
+	}
+}
+
 func TestDeleteBookingSystemForbiddenForNonAdmin(t *testing.T) {
 	setupTestDB(t)
+	withNamespaceAdminChecker(t, false, nil)
 	db := database.DB()
 
 	today := time.Now().Format("2006-01-02")
@@ -364,6 +472,49 @@ func TestDeleteBookingSystemForbiddenForNonAdmin(t *testing.T) {
 
 	if w.Code != http.StatusForbidden {
 		t.Errorf("status = %d, want %d (owner is namespace, not the requesting user)", w.Code, http.StatusForbidden)
+	}
+}
+
+func TestDeleteBookingSystemByCreator(t *testing.T) {
+	setupTestDB(t)
+	db := database.DB()
+
+	today := time.Now().Format("2006-01-02")
+	db.Exec(
+		"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		"booking-777", "team-x", "jdoe", "nvidia.com/gpu", 0, today, "full", "now", database.SourceReserved, "", 0, 24, 0, database.BookingTypeSystem,
+	)
+
+	req := httptest.NewRequest(http.MethodDelete, "/bookings?id=booking-777", nil)
+	req = reqWithUser(req, &UserInfo{Username: "jdoe", IsAdmin: false})
+	w := httptest.NewRecorder()
+
+	DeleteBooking(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d (creator may cancel their own system booking)", w.Code, http.StatusOK)
+	}
+}
+
+func TestDeleteBookingSystemByNamespaceAdmin(t *testing.T) {
+	setupTestDB(t)
+	withNamespaceAdminChecker(t, true, nil)
+	db := database.DB()
+
+	today := time.Now().Format("2006-01-02")
+	db.Exec(
+		"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		"booking-777", "team-x", "alice", "nvidia.com/gpu", 0, today, "full", "now", database.SourceReserved, "", 0, 24, 0, database.BookingTypeSystem,
+	)
+
+	req := httptest.NewRequest(http.MethodDelete, "/bookings?id=booking-777", nil)
+	req = reqWithUser(req, &UserInfo{Username: "jdoe", IsAdmin: false})
+	w := httptest.NewRecorder()
+
+	DeleteBooking(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d (namespace admin may cancel the reservation)", w.Code, http.StatusOK)
 	}
 }
 
@@ -385,5 +536,142 @@ func TestDeleteBookingSystemByAdmin(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestBulkCancelByCreator(t *testing.T) {
+	setupTestDB(t)
+	withNamespaceAdminChecker(t, false, nil)
+	db := database.DB()
+
+	today := time.Now().Format("2006-01-02")
+	// Own system booking plus one created by alice in the same namespace
+	db.Exec(
+		"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		"booking-777", "team-x", "jdoe", "nvidia.com/gpu", 0, today, "full", "now", database.SourceReserved, "", 0, 24, 0, database.BookingTypeSystem,
+	)
+	db.Exec(
+		"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		"booking-778", "team-x", "alice", "nvidia.com/gpu", 1, today, "full", "now", database.SourceReserved, "", 0, 24, 0, database.BookingTypeSystem,
+	)
+
+	body := `{"ids":["booking-777","booking-778"]}`
+	req := httptest.NewRequest(http.MethodPost, "/bookings/bulk-cancel", strings.NewReader(body))
+	req = reqWithUser(req, &UserInfo{Username: "jdoe", IsAdmin: false})
+	w := httptest.NewRecorder()
+
+	BulkCancelHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp struct {
+		Deleted []string `json:"deleted"`
+		Errors  []string `json:"errors"`
+	}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if len(resp.Deleted) != 1 || resp.Deleted[0] != "booking-777" {
+		t.Errorf("deleted = %v, want [booking-777] (creator may cancel their own)", resp.Deleted)
+	}
+	if len(resp.Errors) != 1 || !strings.Contains(resp.Errors[0], "booking-778: forbidden") {
+		t.Errorf("errors = %v, want booking-778: forbidden", resp.Errors)
+	}
+}
+
+func TestBulkCancelByNamespaceAdmin(t *testing.T) {
+	setupTestDB(t)
+	withNamespaceAdminChecker(t, true, nil)
+	db := database.DB()
+
+	today := time.Now().Format("2006-01-02")
+	db.Exec(
+		"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		"booking-777", "team-x", "alice", "nvidia.com/gpu", 0, today, "full", "now", database.SourceReserved, "", 0, 24, 0, database.BookingTypeSystem,
+	)
+	db.Exec(
+		"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		"booking-778", "team-x", "bob", "nvidia.com/gpu", 1, today, "full", "now", database.SourceReserved, "", 0, 24, 0, database.BookingTypeSystem,
+	)
+
+	body := `{"ids":["booking-777","booking-778"]}`
+	req := httptest.NewRequest(http.MethodPost, "/bookings/bulk-cancel", strings.NewReader(body))
+	req = reqWithUser(req, &UserInfo{Username: "jdoe", IsAdmin: false})
+	w := httptest.NewRecorder()
+
+	BulkCancelHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp struct {
+		Deleted []string `json:"deleted"`
+		Errors  []string `json:"errors"`
+	}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if len(resp.Deleted) != 2 {
+		t.Errorf("deleted = %v, want both (namespace admin manages the shared reservation)", resp.Deleted)
+	}
+	if len(resp.Errors) != 0 {
+		t.Errorf("errors = %v, want none", resp.Errors)
+	}
+}
+
+func TestCanManageBooking(t *testing.T) {
+	orig := namespaceAdminFn
+	namespaceAdminFn = func(_ context.Context, _ *UserInfo, ns string) (bool, error) {
+		return ns == "team-x", nil
+	}
+	t.Cleanup(func() { namespaceAdminFn = orig })
+
+	admin := &UserInfo{Username: "admin", IsAdmin: true}
+	jdoe := &UserInfo{Username: "jdoe", IsAdmin: false}
+	alice := &UserInfo{Username: "alice", IsAdmin: false}
+
+	cases := []struct {
+		name      string
+		user      *UserInfo
+		owner     string
+		createdBy string
+		want      bool
+	}{
+		{"cluster admin", admin, "team-x", "jdoe", true},
+		{"owner match", jdoe, "jdoe", "", true},
+		{"creator match", jdoe, "team-x", "jdoe", true},
+		{"namespace admin", alice, "team-x", "jdoe", true},
+		{"namespace denied", alice, "team-y", "jdoe", false},
+		{"unrelated user", alice, "team-y", "bob", false},
+		{"user booking strict for others", jdoe, "team-x", "", false},
+	}
+	for _, tc := range cases {
+		if got := canManageBooking(context.Background(), tc.user, tc.owner, tc.createdBy, nil); got != tc.want {
+			t.Errorf("%s: canManageBooking = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+
+	// Cache path: memoized namespace-admin result is honored
+	cache := map[string]bool{"team-x": true}
+	if !canManageBooking(context.Background(), alice, "team-x", "bob", cache) {
+		t.Error("cached namespace admin should be allowed")
+	}
+
+	// Error path denies
+	namespaceAdminFn = func(_ context.Context, _ *UserInfo, _ string) (bool, error) {
+		return false, fmt.Errorf("api down")
+	}
+	if canManageBooking(context.Background(), alice, "team-x", "bob", nil) {
+		t.Error("error from namespace admin check should deny")
+	}
+}
+
+func TestNamespaceAdminFn(t *testing.T) {
+	// Cluster admins always pass
+	if ok, err := namespaceAdminFn(context.Background(), &UserInfo{Username: "admin", IsAdmin: true}, "any-ns"); err != nil || !ok {
+		t.Errorf("cluster admin: ok=%v err=%v, want true/nil", ok, err)
+	}
+	// No auth client (tests/local dev) — allowed, no SAR performed
+	if ok, err := namespaceAdminFn(context.Background(), &UserInfo{Username: "dev-admin", IsAdmin: false}, "any-ns"); err != nil || !ok {
+		t.Errorf("no auth client: ok=%v err=%v, want true/nil", ok, err)
 	}
 }

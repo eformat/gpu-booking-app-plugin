@@ -134,9 +134,9 @@ The console's `UserToken` proxy forwards the logged-in user's Bearer token to th
 GET    /api/auth/me                  → current user info (username, groups, is_admin)
 GET    /api/config                   → GPU specs, booking window, cluster capacity
 GET    /api/bookings                 → all bookings + active reservations + current user
-POST   /api/bookings                 → create single booking (conflict resolution, admin may pass targetNamespace for system bookings)
+POST   /api/bookings                 → create single booking (conflict resolution; cluster/namespace admins may pass targetNamespace for system bookings)
 DELETE /api/bookings?id=             → cancel booking (owner or admin only)
-POST   /api/bookings/bulk            → create multi-day bookings (date range + resource counts, admin targetNamespace supported)
+POST   /api/bookings/bulk            → create multi-day bookings (date range + resource counts; cluster/namespace admin targetNamespace supported)
 GET    /api/workloads/preempted      → list Kueue workloads with Preempted/Evicted conditions
 GET    /api/admin                    → all bookings (admin only)
 DELETE /api/admin?id=                → delete booking (admin only)
@@ -192,12 +192,13 @@ When a user has an active reservation, three Kubernetes resources are created:
 
 ### System Bookings
 
-Administrators can create **system bookings** for a namespace that has no logged-in user (e.g. `shared-maas` for shared MaaS model-serving capacity). System bookings are created via `POST /api/bookings` or `/api/bookings/bulk` with a `targetNamespace` field, which is only honored for users with the booking admin permission. The target namespace must exist in the cluster (verified at booking time).
+Cluster administrators and **namespace administrators** (users who can create RoleBindings in the target namespace — verified via a namespace-scoped SubjectAccessReview) can create **system bookings** for a namespace rather than for themselves (e.g. `shared-maas` for shared MaaS model-serving capacity). This lets a team of namespace admins manage reservations for their shared namespace without cluster-wide admin rights. System bookings are created via `POST /api/bookings` or `/api/bookings/bulk` with a `targetNamespace` field. The target namespace must exist in the cluster (verified at booking time), and the requester must be able to administer it.
 
-- Bookings are stored with `booking_type = 'system'`; the `user` column holds the target namespace and the `email` column holds the creating admin's username.
+- Bookings are stored with `booking_type = 'system'`; the `user` column holds the target namespace and the `email` column holds the creating user's username.
 - **ClusterQueue** (`system-<namespace>`) - scoped to the existing target namespace via its namespaceSelector, labeled `rhai-tmm.dev/namespace` so cleanup can locate the namespace-scoped resources.
 - **LocalQueue** (`reserved`) and **HardwareProfile(s)** are created inside the target namespace.
 - System reservations follow the same conflict rules (they block user reservations, evict consumed slots), share the same Cohort accounting, and expire/drain through the same `until` label mechanism.
+- System bookings may be cancelled by their creator (`email`), any admin of the target namespace, or a cluster admin (`canManageBooking`).
 
 ### Quota Flow
 
