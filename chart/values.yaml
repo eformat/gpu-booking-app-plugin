@@ -2,7 +2,7 @@ replicaCount: 1
 
 image:
   repository: quay.io/eformat/gpu-booking-plugin
-  tag: tenant
+  tag: latest
   pullPolicy: Always
 
 plugin:
