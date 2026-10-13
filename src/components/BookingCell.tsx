@@ -98,7 +98,7 @@ const BookingCell: React.FC<BookingCellProps> = ({
       );
     }
 
-    if (booking.user === currentUser || activeReservations[booking.user]) {
+    if (booking.user === currentUser || booking.email === currentUser || activeReservations[booking.user]) {
       return (
         <div>
           {activeReservations[booking.user] && (
@@ -113,6 +113,12 @@ const BookingCell: React.FC<BookingCellProps> = ({
               <Button variant="link" size="sm" onClick={() => onEdit(booking)}>
                 Edit
               </Button>
+              <Button variant="link" size="sm" isDanger onClick={() => onConfirmCancel(booking.id)}>
+                Cancel
+              </Button>
+            </div>
+          ) : booking.email === currentUser ? (
+            <div style={{ display: 'flex', gap: '4px', marginTop: '4px', justifyContent: 'center' }}>
               <Button variant="link" size="sm" isDanger onClick={() => onConfirmCancel(booking.id)}>
                 Cancel
               </Button>

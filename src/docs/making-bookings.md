@@ -44,9 +44,9 @@ Click the **Book** button to create all bookings at once. The system auto-finds 
 
 ---
 
-## System Bookings (Admins)
+## System Bookings (Namespace Admins)
 
-Administrators can create **system bookings** -- reservations for a namespace that has no logged-in user, such as shared model-serving capacity. For example, reserving GPUs for the `shared-maas` namespace that hosts MaaS models.
+Cluster administrators and **namespace administrators** can create **system bookings** -- reservations for a namespace rather than for themselves, such as shared model-serving capacity. For example, reserving GPUs for the `shared-maas` namespace that hosts MaaS models. Any user who is an administrator of the target namespace (able to create RoleBindings in it) can create a system booking for it, so a team of namespace admins can manage reservations for their shared namespace without cluster-wide admin rights.
 
 ### Creating a system booking
 
@@ -58,7 +58,7 @@ Administrators can create **system bookings** -- reservations for a namespace th
 
 <div class="alert alert-info">
   <strong>Tip</strong>
-  <p>The <strong>Book as</strong> section is only visible to administrators. The namespace is validated against the cluster before the booking is created -- a typo returns a <code>namespace_not_found</code> error.</p>
+  <p>The namespace is validated against the cluster before the booking is created -- a typo returns a <code>namespace_not_found</code> error. If you are not an administrator of the target namespace, the booking is rejected with a <em>you are not an admin of namespace &lt;name&gt;</em> error.</p>
 </div>
 
 ### How system bookings appear
@@ -66,8 +66,8 @@ Administrators can create **system bookings** -- reservations for a namespace th
 - The booking shows the **namespace name** in place of a username, with a blue **system** badge
 - System bookings block user reservations exactly like any other reserved booking -- attempting to reserve a system-held slot returns a conflict
 - Like user reservations, system bookings automatically evict consumed (Kueue) bookings when created
-- System bookings are not shown under **My Bookings** for the admin who created them
-- Cancelling a system booking is done by an administrator via the [Admin Dashboard](admin)
+- System bookings created by you are shown under **My Bookings** (with a Cancel button), even though they are owned by the namespace
+- Cancelling a system booking is done by its creator, any administrator of the target namespace (via the booking API), or a cluster administrator via the [Admin Dashboard](admin)
 
 ### Quota and expiry
 
@@ -186,6 +186,7 @@ If a booking operation fails, an error banner appears at the top of the page. Co
 | `no_slots_available` | Not enough free units for the requested resource/date/hour combination. Reduce the count or try different dates. |
 | `consumed_booking` | You tried to cancel a Kueue auto-booking. Use the Override button instead, or contact an admin. |
 | `admin_required` | You tried to create a system booking without admin permissions. |
+| `you are not an admin of namespace <name>` | You tried to create a system booking for a namespace you are not an administrator of. Ask a namespace or cluster admin to make the booking. |
 | `invalid_namespace` | The system booking namespace is not a valid Kubernetes namespace name (lowercase letters, numbers, and dashes, max 63 characters). |
 | `namespace_not_found` | The system booking namespace does not exist in the cluster. Check the spelling and try again. |
 | Network error | The server may be temporarily unavailable. Try refreshing the page. |

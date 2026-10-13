@@ -173,6 +173,37 @@ func AuthMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// namespaceAdminFn reports whether the user may administer the given
+// namespace: cluster admins always pass; other users must be a "local admin"
+// of the namespace (able to create RoleBindings in it — the OpenShift `admin`
+// Role). Group memberships from the TokenReview are honored, so group-based
+// RoleBindings work. Skipped when no Kubernetes client is configured (local
+// development). Overridden in tests to simulate authorization checks.
+var namespaceAdminFn = func(ctx context.Context, user *UserInfo, ns string) (bool, error) {
+	if user.IsAdmin {
+		return true, nil
+	}
+	if authClient == nil {
+		return true, nil
+	}
+	sar, err := authClient.AuthorizationV1().SubjectAccessReviews().Create(ctx, &authorizationv1.SubjectAccessReview{
+		Spec: authorizationv1.SubjectAccessReviewSpec{
+			User:   user.Username,
+			Groups: user.Groups,
+			ResourceAttributes: &authorizationv1.ResourceAttributes{
+				Namespace: ns,
+				Group:     "rbac.authorization.k8s.io",
+				Resource:  "rolebindings",
+				Verb:      "create",
+			},
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		return false, err
+	}
+	return sar.Status.Allowed, nil
+}
+
 func MeHandler(w http.ResponseWriter, r *http.Request) {
 	user := GetUser(r)
 	JsonResponse(w, user)

@@ -129,7 +129,7 @@ The app auto-discovers GPU resources from the cluster every 5 minutes. If the cl
 
 ### What is a system booking? Why is there a namespace instead of a username?
 
-Administrators can create **system bookings** -- reservations for a namespace that has no logged-in user, such as shared model-serving capacity (e.g. the `shared-maas` namespace hosting MaaS models). The booking shows the namespace name with a blue **system** badge instead of a username. System bookings reserve capacity for workloads in that namespace and follow the same conflict, preemption, and expiry rules as user reservations. See [Making Bookings](making-bookings) for details.
+Cluster administrators and **namespace administrators** (users who can create RoleBindings in the target namespace) can create **system bookings** -- reservations for a namespace rather than for themselves, such as shared model-serving capacity (e.g. the `shared-maas` namespace hosting MaaS models). The booking shows the namespace name with a blue **system** badge instead of a username. System bookings reserve capacity for workloads in that namespace and follow the same conflict, preemption, and expiry rules as user reservations. See [Making Bookings](making-bookings) for details.
 
 ---
 
