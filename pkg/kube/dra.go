@@ -56,8 +56,8 @@ type draCounter struct {
 }
 
 type draCounterConsumption struct {
-	CounterSet string                 `json:"counterSet"`
-	Counters   map[string]draCounter  `json:"counters"`
+	CounterSet string                `json:"counterSet"`
+	Counters   map[string]draCounter `json:"counters"`
 }
 
 type draAttribute struct {
@@ -227,20 +227,23 @@ func parseDRASlices(body []byte, hasGPUQuotaName bool) []database.GPUResourceSpe
 			// prevents full+partition double-booking, and the booking app
 			// books profiles, not raw counter sets.
 			if len(dev.Counters) > 0 {
-				memGiB := 0
+				memMiB := 0
 				if c, ok := dev.Counters["memory"]; ok {
-					// NVIDIA memory counters are MiB; normalize to GiB.
-					memGiB = int(c.Value) / 1024
+					// NVIDIA memory counters are MiB.
+					memMiB = int(c.Value)
 				} else if memStr, ok := dev.Capacity["memory"]; ok {
-					memGiB = parseMemoryGi(memStr.Value)
+					memMiB = parseMemoryMi(memStr.Value)
 				}
 				if pool != "" {
-					counterSets[counterKey(pool, dev.Name)] = memGiB
+					counterSets[counterKey(pool, dev.Name)] = memMiB
 				}
 				continue
 			}
 
 			// MIG partition devices (dynamic MIG): grouped per profile.
+			// Partitions may ALSO be consumable-share capable (shares
+			// capacity + allowMultipleAllocations — verified live on the
+			// test bed): booking units per profile = partitions x shares.
 			if len(dev.ConsumesCounters) > 0 {
 				profile := attrStringAny(dev, draProfileAttrKeys)
 				if profile == "" {
@@ -248,36 +251,41 @@ func parseDRASlices(body []byte, hasGPUQuotaName bool) []database.GPUResourceSpe
 					continue
 				}
 				product := attrStringAny(dev, draProductAttrKeys)
-				memGiB := 0
+				memMiB := 0
 				if memStr, ok := dev.Capacity["memory"]; ok {
-					memGiB = parseMemoryGi(memStr.Value)
+					memMiB = parseMemoryMi(memStr.Value)
 				} else {
 					for _, cc := range dev.ConsumesCounters {
 						if c, ok := cc.Counters["memory"]; ok {
-							memGiB = int(c.Value) / 1024
+							memMiB = int(c.Value)
 						}
 					}
 				}
 				// GPU-equivalent: partition memory vs the full physical
-				// device's counter-set memory (both GiB).
-				deviceMemGiB := 0
+				// device's counter-set memory (both MiB).
+				deviceMemMiB := 0
 				for _, cc := range dev.ConsumesCounters {
 					if m, ok := counterSets[counterKey(pool, cc.CounterSet)]; ok && m > 0 {
-						deviceMemGiB = m
+						deviceMemMiB = m
 						break
 					}
 				}
 				equiv := 1.0
-				if deviceMemGiB > 0 && memGiB > 0 {
-					equiv = math.Round(float64(memGiB)/float64(deviceMemGiB)*1000) / 1000
+				if deviceMemMiB > 0 && memMiB > 0 {
+					equiv = math.Round(float64(memMiB)/float64(deviceMemMiB)*1000) / 1000
+				}
+				maxShares := 1
+				if dev.AllowMultipleAllocations {
+					maxShares = sharesPerDevice(dev)
 				}
 				g := &deviceGroup{
-					product:  product,
-					mig:      true,
-					profile:  profile,
-					devices:  1,
-					memoryGB: memGiB,
-					gpuEquiv: equiv,
+					product:   product,
+					mig:       true,
+					profile:   profile,
+					devices:   1,
+					maxShares: maxShares,
+					memoryGB:  memMiB / 1024,
+					gpuEquiv:  equiv,
 				}
 				addDevice(g)
 				key := g.product + "\x00" + isolationKind(false) + "\x00" + g.profile
@@ -353,11 +361,21 @@ func parseDRASlices(body []byte, hasGPUQuotaName bool) []database.GPUResourceSpe
 		switch {
 		case g.mig:
 			// Dynamic MIG profile instance: fluid inventory (the count
-			// changes as partitions are created/destroyed), hard isolation.
+			// changes as partitions are created/destroyed), hard isolation
+			// BETWEEN partitions. Partitions may additionally be
+			// consumable-share capable (verified live): booking units are
+			// then per-share, with per-share equivalents and memory.
 			spec.Name = product + " MIG " + g.profile
 			spec.Isolation = database.IsolationMIG
 			spec.Count = g.devices
 			spec.GPUEquivalent = g.gpuEquiv
+			spec.DeviceMemoryGB = g.memoryGB
+			if g.maxShares > 1 {
+				spec.Count = g.devices * g.maxShares
+				spec.MaxSharesPerDevice = g.maxShares
+				spec.GPUEquivalent = math.Round((g.gpuEquiv/float64(g.maxShares))*1000) / 1000
+				spec.DeviceMemoryGB = g.memoryGB / g.maxShares
+			}
 		case g.shared:
 			spec.Name = product + " Shares"
 			spec.Isolation = database.IsolationShared
@@ -424,6 +442,33 @@ func draLogicalQuotaName(product string, shared bool, profile string) string {
 		return normalized + "-share"
 	}
 	return normalized + "-gpu"
+}
+
+// parseMemoryMi parses a Quantity string into MiB (partition capacities and
+// counter values are compared in MiB for GPU-equivalent math).
+func parseMemoryMi(s string) int {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	if val, ok := strings.CutSuffix(s, "Ki"); ok {
+		v, _ := strconv.ParseInt(val, 10, 64)
+		return int(v / 1024)
+	}
+	if val, ok := strings.CutSuffix(s, "Mi"); ok {
+		v, _ := strconv.ParseInt(val, 10, 64)
+		return int(v)
+	}
+	if val, ok := strings.CutSuffix(s, "Gi"); ok {
+		v, _ := strconv.ParseInt(val, 10, 64)
+		return int(v * 1024)
+	}
+	if val, ok := strings.CutSuffix(s, "Ti"); ok {
+		v, _ := strconv.ParseInt(val, 10, 64)
+		return int(v * 1024 * 1024)
+	}
+	v, _ := strconv.ParseInt(s, 10, 64)
+	return int(v / (1024 * 1024))
 }
 
 func attrString(dev draDevice, key string) string {

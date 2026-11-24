@@ -553,8 +553,9 @@ func TestParseDRASlices_MixedSharesAndMIG(t *testing.T) {
           {
             "name": "gpu-0-mig-1",
             "attributes": { "productName": { "string": "NVIDIA A100-SXM4-40GB" }, "profile": { "string": "2g.24gb" } },
-            "capacity": { "memory": { "value": "24576Mi" } },
-            "consumesCounters": [ { "counterSet": "gpu-0", "counters": { "memory": { "value": 24576 } } } ]
+            "capacity": { "memory": { "value": "24576Mi" }, "shares": { "value": "4", "requestPolicy": { "validRange": { "min": "1", "max": "4" } } } },
+            "consumesCounters": [ { "counterSet": "gpu-0", "counters": { "memory": { "value": 24576 } } } ],
+            "allowMultipleAllocations": true
           }
         ]
       }
@@ -590,8 +591,12 @@ func TestParseDRASlices_MixedSharesAndMIG(t *testing.T) {
 			}
 		}
 		if s.Name == "NVIDIA A100 SXM4 40GB MIG 2g.24gb" {
-			if s.Isolation != "mig" || s.Count != 1 || s.GPUEquivalent != 0.6 {
-				t.Errorf("MIG entry: isolation=%q count=%d equiv=%f, want mig/1/0.6", s.Isolation, s.Count, s.GPUEquivalent)
+			// Live-tested shape: the partition is also consumable-share
+			// capable — 1 partition x 4 shares, per-share equivalent
+			// 0.6/4 = 0.15, per-share memory 24/4 = 6 GB.
+			if s.Isolation != "mig" || s.Count != 4 || s.GPUEquivalent != 0.15 || s.MaxSharesPerDevice != 4 || s.DeviceMemoryGB != 6 {
+				t.Errorf("MIG entry: iso=%q count=%d equiv=%f shares=%d memGB=%d, want mig/4/0.15/4/6",
+					s.Isolation, s.Count, s.GPUEquivalent, s.MaxSharesPerDevice, s.DeviceMemoryGB)
 			}
 		}
 	}
