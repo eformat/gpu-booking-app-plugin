@@ -554,7 +554,7 @@ func TestParseDRASlices_MixedSharesAndMIG(t *testing.T) {
             "name": "gpu-0-mig-1",
             "attributes": { "productName": { "string": "NVIDIA A100-SXM4-40GB" }, "profile": { "string": "2g.24gb" } },
             "capacity": { "memory": { "value": "24576Mi" }, "shares": { "value": "4", "requestPolicy": { "validRange": { "min": "1", "max": "4" } } } },
-            "consumesCounters": [ { "counterSet": "gpu-0", "counters": { "memory": { "value": 24576 } } } ],
+            "consumesCounters": [ { "counterSet": "gpu-0", "counters": { "memory": { "value": "24576" } } } ],
             "allowMultipleAllocations": true
           }
         ]

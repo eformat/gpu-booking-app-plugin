@@ -52,7 +52,22 @@ type draDevice struct {
 }
 
 type draCounter struct {
-	Value int64 `json:"value"`
+	// The API spec says int64, but the live driver serializes the value as
+	// a JSON string — accept both via json.Number.
+	Value json.Number `json:"value"`
+}
+
+// miB returns the counter value in MiB (NVIDIA memory counters). Bare
+// numbers are MiB; suffixed quantities go through parseMemoryMi.
+func (c draCounter) miB() int {
+	s := string(c.Value)
+	if s == "" || s == "null" {
+		return 0
+	}
+	if v, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return int(v)
+	}
+	return parseMemoryMi(s)
 }
 
 type draCounterConsumption struct {
@@ -230,7 +245,7 @@ func parseDRASlices(body []byte, hasGPUQuotaName bool) []database.GPUResourceSpe
 				memMiB := 0
 				if c, ok := dev.Counters["memory"]; ok {
 					// NVIDIA memory counters are MiB.
-					memMiB = int(c.Value)
+					memMiB = c.miB()
 				} else if memStr, ok := dev.Capacity["memory"]; ok {
 					memMiB = parseMemoryMi(memStr.Value)
 				}
@@ -257,7 +272,7 @@ func parseDRASlices(body []byte, hasGPUQuotaName bool) []database.GPUResourceSpe
 				} else {
 					for _, cc := range dev.ConsumesCounters {
 						if c, ok := cc.Counters["memory"]; ok {
-							memMiB = int(c.Value)
+							memMiB = c.miB()
 						}
 					}
 				}
