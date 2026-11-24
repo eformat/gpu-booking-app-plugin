@@ -1,6 +1,7 @@
 package kube
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -598,6 +599,27 @@ func TestParseDRASlices_MixedSharesAndMIG(t *testing.T) {
 				t.Errorf("MIG entry: iso=%q count=%d equiv=%f shares=%d memGB=%d, want mig/4/0.15/4/6",
 					s.Isolation, s.Count, s.GPUEquivalent, s.MaxSharesPerDevice, s.DeviceMemoryGB)
 			}
+		}
+	}
+}
+
+func TestDraCounterValueForms(t *testing.T) {
+	// Live driver counter values: bare numbers (MiB) and suffixed
+	// quantities both occur.
+	cases := map[string]int{
+		"40960":      40960,
+		"\"9856Mi\"": 9856,
+		"\"40Gi\"":   40960,
+		"":           0,
+	}
+	for raw, want := range cases {
+		var c draCounter
+		if err := json.Unmarshal([]byte(raw), &c); err != nil {
+			t.Errorf("unmarshal %s: %v", raw, err)
+			continue
+		}
+		if got := c.miB(); got != want {
+			t.Errorf("miB(%s) = %d, want %d", raw, got, want)
 		}
 	}
 }

@@ -53,14 +53,15 @@ type draDevice struct {
 
 type draCounter struct {
 	// The API spec says int64, but the live driver serializes the value as
-	// a JSON string — accept both via json.Number.
-	Value json.Number `json:"value"`
+	// a Quantity-style JSON string — bare numbers ("24576") and suffixed
+	// quantities ("9856Mi") both occur. Parsed by miB().
+	Value string `json:"value"`
 }
 
 // miB returns the counter value in MiB (NVIDIA memory counters). Bare
 // numbers are MiB; suffixed quantities go through parseMemoryMi.
 func (c draCounter) miB() int {
-	s := string(c.Value)
+	s := strings.TrimSpace(c.Value)
 	if s == "" || s == "null" {
 		return 0
 	}
