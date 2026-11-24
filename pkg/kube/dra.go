@@ -54,21 +54,22 @@ type draDevice struct {
 type draCounter struct {
 	// The API spec says int64, but the live driver serializes the value as
 	// a Quantity-style JSON string — bare numbers ("24576") and suffixed
-	// quantities ("9856Mi") both occur. Parsed by miB().
-	Value string `json:"value"`
+	// quantities ("9856Mi") both occur. RawMessage + miB() accepts all forms.
+	Value json.RawMessage `json:"value"`
 }
 
 // miB returns the counter value in MiB (NVIDIA memory counters). Bare
 // numbers are MiB; suffixed quantities go through parseMemoryMi.
 func (c draCounter) miB() int {
-	s := strings.TrimSpace(c.Value)
-	if s == "" || s == "null" {
+	raw := strings.TrimSpace(string(c.Value))
+	raw = strings.Trim(raw, `"`)
+	if raw == "" || raw == "null" {
 		return 0
 	}
-	if v, err := strconv.ParseInt(s, 10, 64); err == nil {
+	if v, err := strconv.ParseInt(raw, 10, 64); err == nil {
 		return int(v)
 	}
-	return parseMemoryMi(s)
+	return parseMemoryMi(raw)
 }
 
 type draCounterConsumption struct {
@@ -193,8 +194,18 @@ func parseDRASlices(body []byte, hasGPUQuotaName bool) []database.GPUResourceSpe
 	skippedNonGPU := 0
 	skippedNoProfile := 0
 
-	// partitionable counter-set devices: (pool, deviceName) -> total memory
-	// (MiB) — the reference for partition GPU-equivalents.
+	// MIG partitions deferred for equivalence math: the board's full memory
+	// comes from either an explicit counter-set device (driver-published) or
+	// the largest profile partition on the same physical device (live driver
+	// publishes partitions without counter-set definitions).
+	type migPartition struct {
+		product, profile, pool, counterSet string
+		memMiB                             int
+	}
+	var migParts []migPartition
+
+	// partitionable counter-set devices: (pool, deviceName) -> memory (MiB)
+	// — the reference for partition GPU-equivalents when published.
 	counterSets := map[string]int{}
 	counterKey := func(pool, dev string) string { return pool + "\x00" + dev }
 
@@ -257,9 +268,10 @@ func parseDRASlices(body []byte, hasGPUQuotaName bool) []database.GPUResourceSpe
 			}
 
 			// MIG partition devices (dynamic MIG): grouped per profile.
-			// Partitions may ALSO be consumable-share capable (shares
-			// capacity + allowMultipleAllocations — verified live on the
-			// test bed): booking units per profile = partitions x shares.
+			// Decision (2026-11-24): 1 booking unit = 1 whole partition.
+			// The live partitions also advertise consumable-shares capacity,
+			// but shares-within-MIG is meaningless for the booking model
+			// (4-way sharing of a 4.75 GiB slice) — not multiplied.
 			if len(dev.ConsumesCounters) > 0 {
 				profile := attrStringAny(dev, draProfileAttrKeys)
 				if profile == "" {
@@ -277,35 +289,17 @@ func parseDRASlices(body []byte, hasGPUQuotaName bool) []database.GPUResourceSpe
 						}
 					}
 				}
-				// GPU-equivalent: partition memory vs the full physical
-				// device's counter-set memory (both MiB).
-				deviceMemMiB := 0
-				for _, cc := range dev.ConsumesCounters {
-					if m, ok := counterSets[counterKey(pool, cc.CounterSet)]; ok && m > 0 {
-						deviceMemMiB = m
-						break
-					}
+				counterSet := ""
+				if len(dev.ConsumesCounters) > 0 {
+					counterSet = dev.ConsumesCounters[0].CounterSet
 				}
-				equiv := 1.0
-				if deviceMemMiB > 0 && memMiB > 0 {
-					equiv = math.Round(float64(memMiB)/float64(deviceMemMiB)*1000) / 1000
-				}
-				maxShares := 1
-				if dev.AllowMultipleAllocations {
-					maxShares = sharesPerDevice(dev)
-				}
-				g := &deviceGroup{
-					product:   product,
-					mig:       true,
-					profile:   profile,
-					devices:   1,
-					maxShares: maxShares,
-					memoryGB:  memMiB / 1024,
-					gpuEquiv:  equiv,
-				}
-				addDevice(g)
-				key := g.product + "\x00" + isolationKind(false) + "\x00" + g.profile
-				trackPool(groups[key], pool)
+				migParts = append(migParts, migPartition{
+					product:    product,
+					profile:    profile,
+					pool:       pool,
+					counterSet: counterSet,
+					memMiB:     memMiB,
+				})
 				continue
 			}
 
@@ -357,6 +351,42 @@ func parseDRASlices(body []byte, hasGPUQuotaName bool) []database.GPUResourceSpe
 		slog.Info("dra discovery: skipped non-GPU devices", "devices", skippedNonGPU)
 	}
 
+	// Resolve MIG partition GPU-equivalents: board memory per physical
+	// device (pool + counterSet). An explicitly published counter-set device
+	// wins; otherwise the largest profile partition on that board IS the
+	// full-board surface (the live driver publishes partitions without
+	// counter-set definitions).
+	boardMemMiB := map[string]int{}
+	for _, p := range migParts {
+		k := counterKey(p.pool, p.counterSet)
+		if p.memMiB > boardMemMiB[k] {
+			boardMemMiB[k] = p.memMiB
+		}
+	}
+	for k, miB := range counterSets {
+		if miB > 0 {
+			boardMemMiB[k] = miB
+		}
+	}
+	for _, p := range migParts {
+		deviceMemMiB := boardMemMiB[counterKey(p.pool, p.counterSet)]
+		equiv := 1.0
+		if deviceMemMiB > 0 && p.memMiB > 0 {
+			equiv = math.Round(float64(p.memMiB)/float64(deviceMemMiB)*1000) / 1000
+		}
+		g := &deviceGroup{
+			product:  p.product,
+			mig:      true,
+			profile:  p.profile,
+			devices:  1,
+			memoryGB: p.memMiB / 1024,
+			gpuEquiv: equiv,
+		}
+		addDevice(g)
+		key := g.product + "\x00" + isolationKind(false) + "\x00" + g.profile
+		trackPool(groups[key], p.pool)
+	}
+
 	// With a single DRA product group and no device-plugin GPU the plain
 	// "nvidia.com/gpu" quota name is kept (matches the deviceClassMappings
 	// convention verified on ocp5-3). Otherwise groups get product-derived
@@ -377,21 +407,15 @@ func parseDRASlices(body []byte, hasGPUQuotaName bool) []database.GPUResourceSpe
 		switch {
 		case g.mig:
 			// Dynamic MIG profile instance: fluid inventory (the count
-			// changes as partitions are created/destroyed), hard isolation
-			// BETWEEN partitions. Partitions may additionally be
-			// consumable-share capable (verified live): booking units are
-			// then per-share, with per-share equivalents and memory.
+			// changes as partitions are created/destroyed), hard isolation.
+			// 1 booking unit = 1 whole partition — shares-within-MIG
+			// advertised by the driver is deliberately not multiplied
+			// (decision 2026-11-24).
 			spec.Name = product + " MIG " + g.profile
 			spec.Isolation = database.IsolationMIG
 			spec.Count = g.devices
 			spec.GPUEquivalent = g.gpuEquiv
 			spec.DeviceMemoryGB = g.memoryGB
-			if g.maxShares > 1 {
-				spec.Count = g.devices * g.maxShares
-				spec.MaxSharesPerDevice = g.maxShares
-				spec.GPUEquivalent = math.Round((g.gpuEquiv/float64(g.maxShares))*1000) / 1000
-				spec.DeviceMemoryGB = g.memoryGB / g.maxShares
-			}
 		case g.shared:
 			spec.Name = product + " Shares"
 			spec.Isolation = database.IsolationShared

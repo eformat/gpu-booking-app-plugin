@@ -2,7 +2,10 @@ package kube
 
 import (
 	"encoding/json"
+	"os"
 	"testing"
+
+	"github.com/eformat/gpu-booking-plugin/pkg/database"
 )
 
 // draSharesSliceFixture mirrors the REAL NVIDIA DRA driver slice shape seen on
@@ -592,11 +595,11 @@ func TestParseDRASlices_MixedSharesAndMIG(t *testing.T) {
 			}
 		}
 		if s.Name == "NVIDIA A100 SXM4 40GB MIG 2g.24gb" {
-			// Live-tested shape: the partition is also consumable-share
-			// capable — 1 partition x 4 shares, per-share equivalent
-			// 0.6/4 = 0.15, per-share memory 24/4 = 6 GB.
-			if s.Isolation != "mig" || s.Count != 4 || s.GPUEquivalent != 0.15 || s.MaxSharesPerDevice != 4 || s.DeviceMemoryGB != 6 {
-				t.Errorf("MIG entry: iso=%q count=%d equiv=%f shares=%d memGB=%d, want mig/4/0.15/4/6",
+			// 1 booking unit = 1 whole partition: partition shares advertised
+			// by the driver are deliberately NOT multiplied (decision
+			// 2026-11-24). Equivalent = 24576/40960 per partition.
+			if s.Isolation != "mig" || s.Count != 1 || s.GPUEquivalent != 0.6 || s.MaxSharesPerDevice != 0 || s.DeviceMemoryGB != 24 {
+				t.Errorf("MIG entry: iso=%q count=%d equiv=%f shares=%d memGB=%d, want mig/1/0.6/0/24",
 					s.Isolation, s.Count, s.GPUEquivalent, s.MaxSharesPerDevice, s.DeviceMemoryGB)
 			}
 		}
@@ -604,22 +607,90 @@ func TestParseDRASlices_MixedSharesAndMIG(t *testing.T) {
 }
 
 func TestDraCounterValueForms(t *testing.T) {
-	// Live driver counter values: bare numbers (MiB) and suffixed
-	// quantities both occur.
 	cases := map[string]int{
-		"40960":      40960,
-		"\"9856Mi\"": 9856,
-		"\"40Gi\"":   40960,
-		"":           0,
+		`40960`:    40960,
+		`"9856Mi"`: 9856,
+		`"40Gi"`:   40960,
+		`null`:     0,
 	}
 	for raw, want := range cases {
 		var c draCounter
-		if err := json.Unmarshal([]byte(raw), &c); err != nil {
+		if err := json.Unmarshal([]byte(`{"value": `+raw+`}`), &c); err != nil {
 			t.Errorf("unmarshal %s: %v", raw, err)
 			continue
 		}
 		if got := c.miB(); got != want {
 			t.Errorf("miB(%s) = %d, want %d", raw, got, want)
+		}
+	}
+}
+
+// TestParseDRASlices_LiveFixture runs the parser against a capture of the
+// REAL ResourceSlices from the FGO test bed (dra-share + dra-mig nodes with
+// dynamic MIG armed). Regenerate with:
+//
+//	oc get resourceslices -o json > pkg/kube/testdata/resourceslices-live.json
+func TestParseDRASlices_LiveFixture(t *testing.T) {
+	body, err := os.ReadFile("testdata/resourceslices-live.json")
+	if err != nil {
+		t.Skipf("live fixture not present: %v", err)
+	}
+
+	specs := parseDRASlices(body, true) // dual-mode: device-plugin L40S pool present
+	byName := map[string]database.GPUResourceSpec{}
+	for _, s := range specs {
+		byName[s.Name] = s
+	}
+
+	// Shares surface (dra-share node, 8 devices x 4 shares).
+	shares, ok := byName["NVIDIA A100 SXM4 40GB Shares"]
+	if !ok {
+		t.Fatalf("missing A100 Shares spec; got %+v", specs)
+	}
+	if shares.Type != "a100-sxm4-40gb-share" || shares.Count != 32 || shares.Isolation != "shared" {
+		t.Errorf("Shares: type=%q count=%d iso=%q, want a100-sxm4-40gb-share/32/shared",
+			shares.Type, shares.Count, shares.Isolation)
+	}
+
+	// MIG profile surfaces: the full A100-40GB table. Count = published
+	// partitions (1 booking unit = 1 whole partition; partition shares NOT
+	// multiplied — decision 2026-11-24). Per-partition equivalents are
+	// memory fractions of the board (40192Mi raw, inferred from the largest
+	// profile — "40gb" display names are rounded). DeviceMemoryGB = raw
+	// partition memory GiB (int-truncated: 4864Mi -> 4).
+	migWant := map[string]struct {
+		count int
+		equiv float64
+		memGB int
+	}{
+		"NVIDIA A100 SXM4 40GB MIG 1g.5gb":    {56, 0.121, 4},
+		"NVIDIA A100 SXM4 40GB MIG 1g.5gb+me": {56, 0.121, 4},
+		"NVIDIA A100 SXM4 40GB MIG 1g.10gb":   {32, 0.245, 9},
+		"NVIDIA A100 SXM4 40GB MIG 2g.10gb":   {24, 0.245, 9},
+		"NVIDIA A100 SXM4 40GB MIG 3g.20gb":   {16, 0.497, 19},
+		"NVIDIA A100 SXM4 40GB MIG 4g.20gb":   {8, 0.497, 19},
+		"NVIDIA A100 SXM4 40GB MIG 7g.40gb":   {8, 1, 39},
+	}
+	for name, want := range migWant {
+		s, ok := byName[name]
+		if !ok {
+			t.Errorf("missing MIG spec %q", name)
+			continue
+		}
+		if s.Isolation != "mig" {
+			t.Errorf("%s Isolation = %q, want mig", name, s.Isolation)
+		}
+		if s.Count != want.count {
+			t.Errorf("%s Count = %d, want %d", name, s.Count, want.count)
+		}
+		if s.GPUEquivalent != want.equiv {
+			t.Errorf("%s GPUEquivalent = %f, want %f", name, s.GPUEquivalent, want.equiv)
+		}
+		if s.DeviceMemoryGB != want.memGB {
+			t.Errorf("%s DeviceMemoryGB = %d, want %d", name, s.DeviceMemoryGB, want.memGB)
+		}
+		if s.MaxSharesPerDevice != 0 {
+			t.Errorf("%s MaxSharesPerDevice = %d, want 0 (partition shares not multiplied)", name, s.MaxSharesPerDevice)
 		}
 	}
 }
