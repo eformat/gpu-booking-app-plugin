@@ -122,8 +122,8 @@ var draProfileAttrKeys = []string{
 	draAttrProfile, "profile", draAttrMIGProfile, "migProfile",
 }
 
-// discoverDRAResources lists DRA ResourceSlices and returns the raw list
-// body (nil when the DRA API is absent). Callers parse node coverage and
+// fetchDRASliceBody lists DRA ResourceSlices and returns the raw list body
+// (nil when the DRA API is absent). Callers parse node coverage and
 // specs from the same body — one API call per discovery cycle. A cluster
 // without the DRA API (404) yields no error, so pre-OCP-5 clusters keep
 // using device-plugin discovery alone.
@@ -140,6 +140,109 @@ func fetchDRASliceBody() ([]byte, error) {
 		return nil, fmt.Errorf("listing resourceslices: %w", err)
 	}
 	return body, nil
+}
+
+// draResourceClaimsPath lists ResourceClaims cluster-wide. Allocated claims
+// are the ground truth of what each booking actually received — quota names
+// (deviceClassMappings) fold whole-GPU shares claims and MIG claims into one
+// resource, so only the claim's allocated device, joined back to its slice
+// attributes, can attribute consumption to a catalog lane.
+const draResourceClaimsPath = "/apis/resource.k8s.io/v1/resourceclaims"
+
+type k8sResourceClaimList struct {
+	Items []k8sResourceClaim `json:"items"`
+}
+
+type k8sResourceClaim struct {
+	Metadata k8sMetadata            `json:"metadata"`
+	Spec     k8sResourceClaimSpec   `json:"spec"`
+	Status   k8sResourceClaimStatus `json:"status"`
+}
+
+type k8sResourceClaimSpec struct {
+	Devices struct {
+		Requests []k8sClaimRequest `json:"requests"`
+	} `json:"devices"`
+}
+
+type k8sClaimRequest struct {
+	Name    string `json:"name"`
+	Exactly struct {
+		DeviceClassName string `json:"deviceClassName"`
+	} `json:"exactly"`
+}
+
+type k8sResourceClaimStatus struct {
+	Allocation *struct {
+		Devices struct {
+			Results []k8sClaimDeviceResult `json:"results"`
+		} `json:"devices"`
+	} `json:"allocation"`
+}
+
+type k8sClaimDeviceResult struct {
+	Request string `json:"request"`
+	Device  string `json:"device"`
+	Pool    string `json:"pool"`
+	Driver  string `json:"driver"`
+}
+
+// fetchAllocatedClaims returns every ResourceClaim with a device allocation,
+// across all namespaces. Claims without an allocation are still pending (or
+// being torn down) and consume nothing.
+func fetchAllocatedClaims() ([]k8sResourceClaim, error) {
+	if !K8sAvailable() {
+		return nil, nil
+	}
+	body, err := K8sGet(draResourceClaimsPath + "?limit=500")
+	if err != nil {
+		if strings.Contains(err.Error(), "returned 404") {
+			slog.Debug("kueue sync: resource.k8s.io/v1 resourceclaims not served, skipping")
+			return nil, nil
+		}
+		return nil, fmt.Errorf("listing resourceclaims: %w", err)
+	}
+	var list k8sResourceClaimList
+	if err := json.Unmarshal(body, &list); err != nil {
+		return nil, fmt.Errorf("parsing resourceclaims: %w", err)
+	}
+	allocated := make([]k8sResourceClaim, 0, len(list.Items))
+	for _, claim := range list.Items {
+		if claim.Status.Allocation != nil && len(claim.Status.Allocation.Devices.Results) > 0 {
+			allocated = append(allocated, claim)
+		}
+	}
+	return allocated, nil
+}
+
+// buildDRADeviceIndex indexes every device the NVIDIA DRA driver publishes,
+// by pool and device name — the coordinates a claim's allocation names. The
+// NVIDIA driver publishes unqualified attribute keys (productName, type,
+// profile); FGO's dra-plugin-gpu publishes gpu.nvidia.com/-qualified ones —
+// readers go through the attrStringAny key lists, never raw map access.
+func buildDRADeviceIndex(body []byte) map[string]draDevice {
+	index := map[string]draDevice{}
+	if len(body) == 0 {
+		return index
+	}
+	var list draSliceList
+	if err := json.Unmarshal(body, &list); err != nil {
+		slog.Error("kueue sync: failed to parse resourceslice list for attribution", "error", err)
+		return index
+	}
+	for _, slice := range list.Items {
+		if slice.Spec.Driver != database.DRADeviceClass {
+			continue
+		}
+		pool := slice.Spec.Pool.Name
+		if pool == "" {
+			pool = slice.Spec.NodeName
+		}
+		for _, dev := range slice.Spec.Devices {
+			index[pool+"\x00"+dev.Name] = dev
+		}
+	}
+	return index
 }
 
 // draSliceNodeNames returns the set of nodes publishing DRA slices for the

@@ -51,12 +51,12 @@ func TestBuildResourceSpecs_WithMIG(t *testing.T) {
 			GPUCount:     8,
 			MIGStrategy:  "mixed",
 			Allocatable: map[string]string{
-				"nvidia.com/gpu":          "8",
-				"nvidia.com/mig-3g.71gb":  "8",
-				"nvidia.com/mig-2g.35gb":  "8",
-				"nvidia.com/mig-1g.18gb":  "16",
-				"cpu":                     "128",
-				"memory":                  "512Gi",
+				"nvidia.com/gpu":         "8",
+				"nvidia.com/mig-3g.71gb": "8",
+				"nvidia.com/mig-2g.35gb": "8",
+				"nvidia.com/mig-1g.18gb": "16",
+				"cpu":                    "128",
+				"memory":                 "512Gi",
 			},
 		},
 	}

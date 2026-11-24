@@ -66,9 +66,12 @@ rules:
     verbs: ["list"]
   # DRA (resource.k8s.io/v1): discovery reads ResourceSlices + DeviceClass;
   # reservations provision per-namespace ResourceClaimTemplates referenced by
-  # DRA HardwareProfiles.
+  # DRA HardwareProfiles. Consumed-usage attribution joins allocated
+  # ResourceClaims back to their slice devices (quota names fold whole-GPU
+  # shares claims and MIG claims into one resource, so the claim is the only
+  # ground truth of which catalog lane a booking lands on).
   - apiGroups: ["resource.k8s.io"]
-    resources: ["resourceslices", "deviceclasses"]
+    resources: ["resourceslices", "deviceclasses", "resourceclaims"]
     verbs: ["get", "list"]
   - apiGroups: ["resource.k8s.io"]
     resources: ["resourceclaimtemplates"]

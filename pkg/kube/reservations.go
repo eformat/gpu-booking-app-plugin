@@ -51,7 +51,8 @@ func sanitizeK8sName(name string) string {
 var ReservationSyncEnabled = true
 
 // syncState tracks coalesced sync requests:
-//   0 = idle, 1 = running, 2 = running + re-run requested
+//
+//	0 = idle, 1 = running, 2 = running + re-run requested
 var syncState int32
 
 // TriggerSyncReservations requests a reservation sync without blocking the caller.

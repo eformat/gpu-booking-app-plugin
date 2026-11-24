@@ -35,11 +35,11 @@ type k8sMetadata struct {
 }
 
 type k8sLocalQueueStatus struct {
-	ReservingWorkloads  int                   `json:"reservingWorkloads"`
-	AdmittedWorkloads   int                   `json:"admittedWorkloads"`
-	FlavorUsage         []k8sFlavorUsageEntry `json:"flavorUsage"`
-	FlavorsReservation  []k8sFlavorUsageEntry `json:"flavorsReservation"`
-	FlavorsUsage        []k8sFlavorUsageEntry `json:"flavorsUsage"`
+	ReservingWorkloads int                   `json:"reservingWorkloads"`
+	AdmittedWorkloads  int                   `json:"admittedWorkloads"`
+	FlavorUsage        []k8sFlavorUsageEntry `json:"flavorUsage"`
+	FlavorsReservation []k8sFlavorUsageEntry `json:"flavorsReservation"`
+	FlavorsUsage       []k8sFlavorUsageEntry `json:"flavorsUsage"`
 }
 
 type k8sFlavorUsageEntry struct {
@@ -67,6 +67,10 @@ type resourceUsage struct {
 	Resource  string
 	Count     int
 }
+
+// nsResKey aggregates usage per namespace and quota resource — the key the
+// quota-name view and the claim-attributed view share.
+type nsResKey struct{ ns, resource string }
 
 var (
 	KueueSyncEnabled  bool
@@ -256,7 +260,6 @@ func kueueSync() error {
 		return fmt.Errorf("listing local queues: %w", err)
 	}
 
-	type nsResKey struct{ ns, resource string }
 	aggregated := map[nsResKey]int{}
 	nsCache := map[string]string{}
 
@@ -305,8 +308,176 @@ func kueueSync() error {
 		})
 	}
 
+	// Quota names cannot attribute lanes on their own: deviceClassMappings
+	// fold whole-GPU shares claims and MIG claims into one quota resource,
+	// so every DRA booking charges the same name. The claims name the device
+	// each booking actually received, and the slice names its profile —
+	// attribute from there, falling back to the quota-name view unless the
+	// split conserves the quota totals.
+	if split, ok := splitDRAUsageByClaim(aggregated, nsCache); ok {
+		usages = split
+	}
+
 	dates := getBookingDates()
 	return syncBookings(usages, dates)
+}
+
+// splitDRAUsageByClaim re-attributes the DRA-charged quota usage onto
+// catalog resources by what each allocated claim actually received.
+//
+// The quota-name view (aggregated) stays the authority on totals: the split
+// is only used when it conserves them — every device result an allocated
+// claim carries must resolve to a catalog resource, and the result count
+// must equal the DRA quota total. Anything else (a slice not yet republished,
+// a device the index has never seen, a claim whose class maps to no quota)
+// returns not-ok and the caller keeps the quota-name view, which is what the
+// app rendered before claims were read.
+func splitDRAUsageByClaim(aggregated map[nsResKey]int, nsCache map[string]string) ([]resourceUsage, bool) {
+	quotaView := make([]resourceUsage, 0, len(aggregated))
+	nonDRA := make([]resourceUsage, 0)
+	expected := 0
+	for key, count := range aggregated {
+		usage := resourceUsage{
+			Namespace: key.ns,
+			User:      nsCache[key.ns],
+			Resource:  key.resource,
+			Count:     count,
+		}
+		quotaView = append(quotaView, usage)
+		if spec, ok := database.GPUSpecByType(key.resource); ok && spec.DRAMode {
+			expected += count
+			continue
+		}
+		nonDRA = append(nonDRA, usage)
+	}
+	if expected == 0 {
+		return quotaView, false
+	}
+
+	claims, err := fetchAllocatedClaims()
+	if err != nil {
+		slog.Warn("kueue sync: claim attribution unavailable, keeping quota-name view", "error", err)
+		return quotaView, false
+	}
+	sliceBody, err := fetchDRASliceBody()
+	if err != nil {
+		slog.Warn("kueue sync: claim attribution unavailable, keeping quota-name view", "error", err)
+		return quotaView, false
+	}
+	devices := buildDRADeviceIndex(sliceBody)
+	if len(devices) == 0 {
+		slog.Warn("kueue sync: no DRA devices indexed, keeping quota-name view")
+		return quotaView, false
+	}
+
+	requester := func(ns string) string {
+		if user, ok := nsCache[ns]; ok && user != "" {
+			return user
+		}
+		user, err := getNamespaceRequester(ns)
+		if err != nil {
+			slog.Warn("kueue sync: cannot get requester for namespace", "namespace", ns, "error", err)
+			return ns
+		}
+		return user
+	}
+
+	// Only namespaces the quota view knows about are attributed: Kueue
+	// charges usage per LocalQueue namespace, so a claim allocated outside
+	// that scope (an unmanaged namespace, a pod that bypassed Kueue) has no
+	// quota unit behind it. Skipping those keeps the attribution scoped
+	// exactly like the quota-name view it replaces — and keeps the
+	// conservation check meaningful rather than failing on every
+	// out-of-band claim.
+	managed := map[string]bool{}
+	for key := range aggregated {
+		managed[key.ns] = true
+	}
+
+	attributed, ok := attributeClaims(claims, devices, expected, managed)
+	if !ok {
+		slog.Warn("kueue sync: claim attribution incomplete, keeping quota-name view",
+			"claims", len(claims), "quota", expected)
+		return quotaView, false
+	}
+
+	usages := nonDRA
+	for key, count := range attributed {
+		usages = append(usages, resourceUsage{
+			Namespace: key.ns,
+			User:      requester(key.ns),
+			Resource:  key.resource,
+			Count:     count,
+		})
+	}
+	return usages, true
+}
+
+// attributeClaims maps every allocated device result onto its catalog
+// resource, via the slice device's attributes. Claims outside the managed
+// namespaces (no quota entry behind them — unmanaged namespaces, pods that
+// bypassed Kueue) are skipped, matching the quota-name view's scope. It
+// returns not-ok unless the attribution is complete and conserves the quota
+// totals: any device the index cannot resolve, any device without a catalog
+// identity, and any total mismatch all fail the whole split — a partial
+// attribution would book consumption onto the wrong lanes, and the
+// quota-name view is the honest answer whenever the claims and the slices
+// disagree.
+func attributeClaims(claims []k8sResourceClaim, devices map[string]draDevice, expected int, managed map[string]bool) (map[nsResKey]int, bool) {
+	attributed := map[nsResKey]int{}
+	count := 0
+	for _, claim := range claims {
+		if !managed[claim.Metadata.Namespace] {
+			continue
+		}
+		for _, result := range claim.Status.Allocation.Devices.Results {
+			dev, ok := devices[result.Pool+"\x00"+result.Device]
+			if !ok {
+				slog.Warn("kueue sync: allocated device not in slice index",
+					"claim", claim.Metadata.Namespace+"/"+claim.Metadata.Name,
+					"device", result.Device, "pool", result.Pool)
+				return nil, false
+			}
+			resource, ok := catalogResourceForDevice(dev)
+			if !ok {
+				slog.Warn("kueue sync: allocated device has no catalog identity",
+					"claim", claim.Metadata.Namespace+"/"+claim.Metadata.Name,
+					"device", result.Device)
+				return nil, false
+			}
+			attributed[nsResKey{claim.Metadata.Namespace, resource}]++
+			count++
+		}
+	}
+	if count != expected {
+		slog.Warn("kueue sync: claim attribution does not conserve quota totals",
+			"claims", count, "quota", expected)
+		return nil, false
+	}
+	return attributed, true
+}
+
+// catalogResourceForDevice names the catalog resource a DRA device books
+// onto — the same naming parseDRASlices gives the catalog entry, so
+// attributed consumption lands on lanes the UI already renders. MIG
+// partitions name their profile lane; whole-GPU devices name the shares or
+// dedicated lane by whether the device backs multiple claims.
+func catalogResourceForDevice(dev draDevice) (string, bool) {
+	product := attrStringAny(dev, draProductAttrKeys)
+	if product == "" {
+		return "", false
+	}
+	switch attrStringAny(dev, draTypeAttrKeys) {
+	case "mig":
+		profile := attrStringAny(dev, draProfileAttrKeys)
+		if profile == "" {
+			return "", false
+		}
+		return draLogicalQuotaName(product, false, profile), true
+	case "", "gpu":
+		return draLogicalQuotaName(product, dev.AllowMultipleAllocations, ""), true
+	}
+	return "", false
 }
 
 func listLocalQueues() (*k8sLocalQueueList, error) {
@@ -377,7 +548,6 @@ func parseResourceCount(total string) int {
 	return 0
 }
 
-
 func getBookingDates() []string {
 	today := time.Now().UTC()
 	var days int
@@ -436,7 +606,7 @@ func syncBookings(usages []resourceUsage, dates []string) error {
 		})
 
 		// Build set of slots occupied by reserved bookings (per date) and count per user
-		reservedSlots := map[string]map[int]bool{}     // date -> set of slot indices
+		reservedSlots := map[string]map[int]bool{}      // date -> set of slot indices
 		reservedSlotUser := map[string]map[int]string{} // date -> slot index -> normalised user
 		userReserved := map[string]map[string]int{}     // date -> normalised user -> count of reserved slots
 		for _, date := range dates {
