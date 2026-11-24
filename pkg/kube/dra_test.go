@@ -170,7 +170,7 @@ func TestParseDRASlices_DedicatedAndMIGSkipped(t *testing.T) {
           {
             "name": "partitioned-dev",
             "attributes": { "productName": { "string": "NVIDIA-A100-40GB" } },
-            "consumesCounters": { "counterSet": "gpu-0" }
+            "consumesCounters": [ { "counterSet": "gpu-0", "counters": { "memory": { "value": 40960 } } } ]
           }
         ]
       }
@@ -432,18 +432,167 @@ func TestDraLogicalQuotaName(t *testing.T) {
 	tests := []struct {
 		product string
 		shared  bool
+		profile string
 		want    string
 	}{
-		{"NVIDIA A100-SXM4-40GB", true, "a100-sxm4-40gb-share"},
-		{"NVIDIA A100-SXM4-40GB", false, "a100-sxm4-40gb-gpu"},
-		{"NVIDIA L40S", false, "l40s-gpu"},
-		{"NVIDIA H100-80GB", true, "h100-80gb-share"},
-		{"", true, "gpu-share"},
+		{"NVIDIA A100-SXM4-40GB", true, "", "a100-sxm4-40gb-share"},
+		{"NVIDIA A100-SXM4-40GB", false, "", "a100-sxm4-40gb-gpu"},
+		{"NVIDIA L40S", false, "", "l40s-gpu"},
+		{"NVIDIA H100-80GB", true, "", "h100-80gb-share"},
+		{"NVIDIA A100-SXM4-40GB", false, "1g.12gb", "a100-sxm4-40gb-mig-1g-12gb"},
+		{"NVIDIA H100-80GB", false, "3g.40gb", "h100-80gb-mig-3g-40gb"},
+		{"", true, "", "gpu-share"},
 	}
 	for _, tt := range tests {
-		got := draLogicalQuotaName(tt.product, tt.shared)
+		got := draLogicalQuotaName(tt.product, tt.shared, tt.profile)
 		if got != tt.want {
-			t.Errorf("draLogicalQuotaName(%q, %v) = %q, want %q", tt.product, tt.shared, got, tt.want)
+			t.Errorf("draLogicalQuotaName(%q, %v, %q) = %q, want %q", tt.product, tt.shared, tt.profile, got, tt.want)
+		}
+	}
+}
+
+func TestParseDRASlices_DynamicMIGPartitionable(t *testing.T) {
+	// Dynamic MIG (KEP-4815 partitionable devices): the full device
+	// advertises a counter set; partition devices consume counters and carry
+	// a MIG profile attribute. Partitions group per profile; the full device
+	// is not a bookable catalog entry.
+	body := `{
+  "items": [
+    {
+      "spec": {
+        "driver": "gpu.nvidia.com",
+        "nodeName": "node-1",
+        "pool": { "name": "node-1" },
+        "devices": [
+          {
+            "name": "gpu-0",
+            "attributes": { "productName": { "string": "NVIDIA A100-SXM4-40GB" }, "type": { "string": "gpu" } },
+            "capacity": { "memory": { "value": "40Gi" } },
+            "counters": { "memory": { "value": 40960 } }
+          },
+          {
+            "name": "gpu-0-mig-1",
+            "attributes": { "productName": { "string": "NVIDIA A100-SXM4-40GB" }, "profile": { "string": "1g.12gb" } },
+            "capacity": { "memory": { "value": "12288Mi" } },
+            "consumesCounters": [ { "counterSet": "gpu-0", "counters": { "memory": { "value": 12288 } } } ]
+          },
+          {
+            "name": "gpu-0-mig-2",
+            "attributes": { "productName": { "string": "NVIDIA A100-SXM4-40GB" }, "profile": { "string": "1g.12gb" } },
+            "capacity": { "memory": { "value": "12288Mi" } },
+            "consumesCounters": [ { "counterSet": "gpu-0", "counters": { "memory": { "value": 12288 } } } ]
+          }
+        ]
+      }
+    }
+  ]
+}`
+
+	specs := parseDRASlices([]byte(body), false)
+	if len(specs) != 1 {
+		t.Fatalf("expected 1 MIG profile spec (full device is not bookable), got %d: %+v", len(specs), specs)
+	}
+	s := specs[0]
+	if s.Name != "NVIDIA A100 SXM4 40GB MIG 1g.12gb" {
+		t.Errorf("Name = %q", s.Name)
+	}
+	if s.Isolation != "mig" {
+		t.Errorf("Isolation = %q, want mig", s.Isolation)
+	}
+	if s.Count != 2 {
+		t.Errorf("Count = %d, want 2 partitions", s.Count)
+	}
+	// 12288 / 40960 = 0.3
+	if s.GPUEquivalent != 0.3 {
+		t.Errorf("GPUEquivalent = %f, want 0.3", s.GPUEquivalent)
+	}
+	if s.DeviceMemoryGB != 12 {
+		t.Errorf("DeviceMemoryGB = %d, want 12 (partition memory)", s.DeviceMemoryGB)
+	}
+	if s.MaxSharesPerDevice != 0 {
+		t.Errorf("MaxSharesPerDevice = %d, want 0 for MIG", s.MaxSharesPerDevice)
+	}
+	// Single product group + no device-plugin GPU: plain quota name.
+	if s.Type != "nvidia.com/gpu" {
+		t.Errorf("Type = %q, want nvidia.com/gpu (single-group convention)", s.Type)
+	}
+}
+
+func TestParseDRASlices_MixedSharesAndMIG(t *testing.T) {
+	// The test bed's upcoming state: dra-share node with plain shares-mode
+	// devices + dra-mig node with MIG partitions of the same product.
+	body := `{
+  "items": [
+    {
+      "spec": {
+        "driver": "gpu.nvidia.com",
+        "nodeName": "node-1",
+        "pool": { "name": "node-1" },
+        "devices": [
+          {
+            "name": "gpu-0",
+            "attributes": { "productName": { "string": "NVIDIA A100-SXM4-40GB" }, "type": { "string": "gpu" } },
+            "capacity": { "memory": { "value": "40Gi" }, "shares": { "value": "4", "requestPolicy": { "validRange": { "min": "1", "max": "4" } } } },
+            "allowMultipleAllocations": true
+          }
+        ]
+      }
+    },
+    {
+      "spec": {
+        "driver": "gpu.nvidia.com",
+        "nodeName": "node-2",
+        "pool": { "name": "node-2" },
+        "devices": [
+          {
+            "name": "gpu-0",
+            "attributes": { "productName": { "string": "NVIDIA A100-SXM4-40GB" }, "type": { "string": "gpu" } },
+            "capacity": { "memory": { "value": "40Gi" } },
+            "counters": { "memory": { "value": 40960 } }
+          },
+          {
+            "name": "gpu-0-mig-1",
+            "attributes": { "productName": { "string": "NVIDIA A100-SXM4-40GB" }, "profile": { "string": "2g.24gb" } },
+            "capacity": { "memory": { "value": "24576Mi" } },
+            "consumesCounters": [ { "counterSet": "gpu-0", "counters": { "memory": { "value": 24576 } } } ]
+          }
+        ]
+      }
+    }
+  ]
+}`
+
+	specs := parseDRASlices([]byte(body), false)
+	if len(specs) != 2 {
+		t.Fatalf("expected 2 specs (shares entry + MIG profile entry), got %d: %+v", len(specs), specs)
+	}
+	byName := map[string]struct {
+		typ string
+		iso string
+		eq  float64
+	}{
+		"NVIDIA A100 SXM4 40GB Shares":      {},
+		"NVIDIA A100 SXM4 40GB MIG 2g.24gb": {},
+	}
+	for _, s := range specs {
+		if _, ok := byName[s.Name]; !ok {
+			t.Errorf("unexpected spec %q", s.Name)
+			continue
+		}
+		if s.Type != "a100-sxm4-40gb-share" && s.Type != "a100-sxm4-40gb-mig-2g-24gb" {
+			t.Errorf("%s Type = %q, want product-derived", s.Name, s.Type)
+		}
+	}
+	for _, s := range specs {
+		if s.Name == "NVIDIA A100 SXM4 40GB Shares" {
+			if s.Isolation != "shared" || s.Count != 4 {
+				t.Errorf("shares entry: isolation=%q count=%d, want shared/4", s.Isolation, s.Count)
+			}
+		}
+		if s.Name == "NVIDIA A100 SXM4 40GB MIG 2g.24gb" {
+			if s.Isolation != "mig" || s.Count != 1 || s.GPUEquivalent != 0.6 {
+				t.Errorf("MIG entry: isolation=%q count=%d equiv=%f, want mig/1/0.6", s.Isolation, s.Count, s.GPUEquivalent)
+			}
 		}
 	}
 }

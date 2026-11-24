@@ -291,3 +291,21 @@ describe('unitLabel', () => {
     expect(unitLabel(r)).toBe('1 GPU');
   });
 });
+
+describe('unitLabel — MIG', () => {
+  it('describes a MIG partition as fractional GPU with slice memory', () => {
+    const r: GPUResource = {
+      name: 'A100 MIG 2g.24gb', type: 'a100-sxm4-40gb-mig-2g-24gb', count: 1, share: 0.1,
+      gpuEquivalent: 0.6, draMode: true, pool: 'dra-mig', isolation: 'mig', deviceMemoryGb: 24,
+    };
+    expect(unitLabel(r)).toBe('0.6 GPU (24 GB slice)');
+  });
+
+  it('omits memory for MIG when unknown', () => {
+    const r: GPUResource = {
+      name: 'A100 MIG 1g.12gb', type: 'a100-sxm4-40gb-mig-1g-12gb', count: 2, share: 0.1,
+      gpuEquivalent: 0.3, draMode: true, pool: 'dra-mig', isolation: 'mig',
+    };
+    expect(unitLabel(r)).toBe('0.3 GPU');
+  });
+});

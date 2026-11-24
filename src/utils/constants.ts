@@ -46,6 +46,13 @@ export function unitLabel(r: GPUResource): string {
     }
     return `${frac} GPU`;
   }
+  if (r.draMode && r.isolation === 'mig' && r.gpuEquivalent && r.gpuEquivalent < 1) {
+    const frac = r.gpuEquivalent.toFixed(2).replace(/\.?0+$/, '');
+    if (r.deviceMemoryGb && r.deviceMemoryGb > 0) {
+      return `${frac} GPU (${r.deviceMemoryGb} GB slice)`;
+    }
+    return `${frac} GPU`;
+  }
   return '1 GPU';
 }
 

@@ -38,12 +38,26 @@ type draDevice struct {
 	Name       string                       `json:"name"`
 	Attributes map[string]draAttribute      `json:"attributes"`
 	Capacity   map[string]draDeviceCapacity `json:"capacity"`
+	// Partitionable devices (KEP-4815, GA k8s 1.36 / OCP 5): the full
+	// physical device advertises a counter set; partition devices declare
+	// which counters they consume. Dynamic MIG publishes partitions this
+	// way — advertised before they physically exist, realized on claim.
+	Counters map[string]draCounter `json:"counters,omitempty"`
+	// ConsumesCounters presence means this device is a PARTITION of a
+	// counter-set device (e.g. a MIG profile instance).
+	ConsumesCounters []draCounterConsumption `json:"consumesCounters,omitempty"`
 	// Consumable capacity (DRA consumable shares, OCP 5 / k8s 1.36): when
 	// true the device can back multiple claims, one per share.
 	AllowMultipleAllocations bool `json:"allowMultipleAllocations"`
-	// Partitionable devices (KEP-4815): presence means a MIG-style partition
-	// device — skipped until Phase 2.
-	ConsumesCounters json.RawMessage `json:"consumesCounters,omitempty"`
+}
+
+type draCounter struct {
+	Value int64 `json:"value"`
+}
+
+type draCounterConsumption struct {
+	CounterSet string                 `json:"counterSet"`
+	Counters   map[string]draCounter  `json:"counters"`
 }
 
 type draAttribute struct {
@@ -86,6 +100,10 @@ var draProductAttrKeys = []string{
 }
 
 var draTypeAttrKeys = []string{draAttrType, "type"}
+
+var draProfileAttrKeys = []string{
+	draAttrProfile, "profile", draAttrMIGProfile, "migProfile",
+}
 
 // discoverDRAResources lists DRA ResourceSlices and returns the raw list
 // body (nil when the DRA API is absent). Callers parse node coverage and
@@ -145,19 +163,27 @@ func parseDRASlices(body []byte, hasGPUQuotaName bool) []database.GPUResourceSpe
 	type deviceGroup struct {
 		product   string
 		shared    bool
+		mig       bool
+		profile   string
 		devices   int
 		maxShares int
 		memoryGB  int
+		gpuEquiv  float64
 		pools     []string // insertion order, for the informational Pool field
 		poolSeen  map[string]bool
 	}
 	groups := map[string]*deviceGroup{}
 	var order []string
 	skippedNonGPU := 0
-	skippedProfiles := 0
+	skippedNoProfile := 0
+
+	// partitionable counter-set devices: (pool, deviceName) -> total memory
+	// (MiB) — the reference for partition GPU-equivalents.
+	counterSets := map[string]int{}
+	counterKey := func(pool, dev string) string { return pool + "\x00" + dev }
 
 	addDevice := func(g *deviceGroup) {
-		key := g.product + "\x00" + isolationKind(g.shared)
+		key := g.product + "\x00" + isolationKind(g.shared) + "\x00" + g.profile
 		existing, ok := groups[key]
 		if !ok {
 			g.poolSeen = map[string]bool{}
@@ -171,6 +197,9 @@ func parseDRASlices(body []byte, hasGPUQuotaName bool) []database.GPUResourceSpe
 		}
 		if g.memoryGB > existing.memoryGB {
 			existing.memoryGB = g.memoryGB
+		}
+		if g.gpuEquiv > existing.gpuEquiv {
+			existing.gpuEquiv = g.gpuEquiv
 		}
 	}
 
@@ -192,23 +221,83 @@ func parseDRASlices(body []byte, hasGPUQuotaName bool) []database.GPUResourceSpe
 		}
 
 		for _, dev := range slice.Spec.Devices {
-			// Only plain GPU devices: skip MIG partitions / VFIO devices
-			// (type attribute) and profile/counter-shaped devices
-			// (dynamic MIG lands in Phase 2).
+			// Partitionable counter-set devices (the full physical GPU under
+			// dynamic MIG): recorded for partition memory math, not emitted
+			// as a bookable catalog entry — DRA counter exclusivity already
+			// prevents full+partition double-booking, and the booking app
+			// books profiles, not raw counter sets.
+			if len(dev.Counters) > 0 {
+				memGiB := 0
+				if c, ok := dev.Counters["memory"]; ok {
+					// NVIDIA memory counters are MiB; normalize to GiB.
+					memGiB = int(c.Value) / 1024
+				} else if memStr, ok := dev.Capacity["memory"]; ok {
+					memGiB = parseMemoryGi(memStr.Value)
+				}
+				if pool != "" {
+					counterSets[counterKey(pool, dev.Name)] = memGiB
+				}
+				continue
+			}
+
+			// MIG partition devices (dynamic MIG): grouped per profile.
+			if len(dev.ConsumesCounters) > 0 {
+				profile := attrStringAny(dev, draProfileAttrKeys)
+				if profile == "" {
+					skippedNoProfile++
+					continue
+				}
+				product := attrStringAny(dev, draProductAttrKeys)
+				memGiB := 0
+				if memStr, ok := dev.Capacity["memory"]; ok {
+					memGiB = parseMemoryGi(memStr.Value)
+				} else {
+					for _, cc := range dev.ConsumesCounters {
+						if c, ok := cc.Counters["memory"]; ok {
+							memGiB = int(c.Value) / 1024
+						}
+					}
+				}
+				// GPU-equivalent: partition memory vs the full physical
+				// device's counter-set memory (both GiB).
+				deviceMemGiB := 0
+				for _, cc := range dev.ConsumesCounters {
+					if m, ok := counterSets[counterKey(pool, cc.CounterSet)]; ok && m > 0 {
+						deviceMemGiB = m
+						break
+					}
+				}
+				equiv := 1.0
+				if deviceMemGiB > 0 && memGiB > 0 {
+					equiv = math.Round(float64(memGiB)/float64(deviceMemGiB)*1000) / 1000
+				}
+				g := &deviceGroup{
+					product:  product,
+					mig:      true,
+					profile:  profile,
+					devices:  1,
+					memoryGB: memGiB,
+					gpuEquiv: equiv,
+				}
+				addDevice(g)
+				key := g.product + "\x00" + isolationKind(false) + "\x00" + g.profile
+				trackPool(groups[key], pool)
+				continue
+			}
+
+			// Only plain GPU devices for the shares/dedicated path: skip
+			// other device types (MIG partitions published with a type
+			// attribute, VFIO, ...) and profile-attributed devices.
 			if t := attrStringAny(dev, draTypeAttrKeys); t != "" && t != "gpu" {
 				skippedNonGPU++
 				continue
 			}
-			if dev.ConsumesCounters != nil {
-				skippedProfiles++
-				continue
-			}
 			if _, ok := dev.Attributes[draAttrProfile]; ok {
-				skippedProfiles++
+				skippedNoProfile++
 				continue
 			}
 			if _, ok := dev.Attributes[draAttrMIGProfile]; ok {
-				skippedProfiles++
+				skippedNoProfile++
 				continue
 			}
 
@@ -232,13 +321,13 @@ func parseDRASlices(body []byte, hasGPUQuotaName bool) []database.GPUResourceSpe
 				memoryGB:  memoryGB,
 			}
 			addDevice(g)
-			key := g.product + "\x00" + isolationKind(g.shared)
+			key := g.product + "\x00" + isolationKind(g.shared) + "\x00" + ""
 			trackPool(groups[key], pool)
 		}
 	}
 
-	if skippedProfiles > 0 {
-		slog.Info("dra discovery: skipped MIG/profile devices until Phase 2", "devices", skippedProfiles)
+	if skippedNoProfile > 0 {
+		slog.Info("dra discovery: skipped devices without MIG profile identity", "devices", skippedNoProfile)
 	}
 	if skippedNonGPU > 0 {
 		slog.Info("dra discovery: skipped non-GPU devices", "devices", skippedNonGPU)
@@ -261,20 +350,28 @@ func parseDRASlices(body []byte, hasGPUQuotaName bool) []database.GPUResourceSpe
 			DeviceMemoryGB: g.memoryGB,
 		}
 
-		if g.shared {
+		switch {
+		case g.mig:
+			// Dynamic MIG profile instance: fluid inventory (the count
+			// changes as partitions are created/destroyed), hard isolation.
+			spec.Name = product + " MIG " + g.profile
+			spec.Isolation = database.IsolationMIG
+			spec.Count = g.devices
+			spec.GPUEquivalent = g.gpuEquiv
+		case g.shared:
 			spec.Name = product + " Shares"
 			spec.Isolation = database.IsolationShared
 			spec.MaxSharesPerDevice = g.maxShares
 			spec.Count = g.devices * g.maxShares
 			spec.GPUEquivalent = math.Round((1.0/float64(g.maxShares))*1000) / 1000
-		} else {
+		default:
 			spec.Name = product + " GPU"
 			spec.Isolation = database.IsolationDedicated
 			spec.Count = g.devices
 			spec.GPUEquivalent = 1.0
 		}
 		if qualifyNames {
-			spec.Type = draLogicalQuotaName(g.product, g.shared)
+			spec.Type = draLogicalQuotaName(g.product, g.shared, g.profile)
 		} else {
 			spec.Type = "nvidia.com/gpu"
 		}
@@ -295,11 +392,17 @@ func isolationKind(shared bool) string {
 }
 
 // draLogicalQuotaName derives a stable, Kueue-safe quota resource name from
-// the device product, e.g. "NVIDIA A100-SXM4-40GB" (shared) ->
-// "a100-sxm4-40gb-share". Stable across node counts and pool churn.
-func draLogicalQuotaName(product string, shared bool) string {
+// the device product (and MIG profile, for partition entries), e.g.
+// "NVIDIA A100-SXM4-40GB" (shared) -> "a100-sxm4-40gb-share",
+// "NVIDIA A100-SXM4-40GB" MIG profile "1g.12gb" -> "a100-sxm4-40gb-mig-1g-12gb".
+// Stable across node counts, pool churn and re-partitioning.
+func draLogicalQuotaName(product string, shared bool, profile string) string {
+	base := product
+	if profile != "" {
+		base = product + "-mig-" + profile
+	}
 	var b strings.Builder
-	for _, r := range strings.ToLower(product) {
+	for _, r := range strings.ToLower(base) {
 		switch {
 		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
 			b.WriteRune(r)
@@ -311,6 +414,11 @@ func draLogicalQuotaName(product string, shared bool) string {
 	normalized = strings.TrimPrefix(normalized, "nvidia-")
 	if normalized == "" {
 		normalized = "gpu"
+	}
+	if profile != "" {
+		// MIG entries are already unambiguous via the -mig-<profile> marker;
+		// no dedicated/shared suffix.
+		return normalized
 	}
 	if shared {
 		return normalized + "-share"
