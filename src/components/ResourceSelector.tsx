@@ -1,7 +1,7 @@
 import * as React from 'react';
-import { Gallery, GalleryItem, Card, CardBody } from '@patternfly/react-core';
+import { Gallery, GalleryItem, Card, CardBody, Label } from '@patternfly/react-core';
 import { MicrochipIcon } from '@patternfly/react-icons';
-import { GPUResource } from '../utils/constants';
+import { GPUResource, isolationBadge, unitLabel } from '../utils/constants';
 
 interface ResourceSelectorProps {
   resources: GPUResource[];
@@ -50,8 +50,20 @@ const ResourceSelector: React.FC<ResourceSelectorProps> = ({
                   <span style={{ fontWeight: 600, fontSize: '14px' }}>{r.name}</span>
                 </div>
                 <div style={{ fontSize: '12px', color: 'var(--pf-t--global--text--color--regular)', opacity: 0.7 }}>
-                  {r.count} units available per slot
+                  {r.count} {r.draMode && r.isolation === 'shared' ? 'shares' : 'units'} available per slot
+                  {r.draMode ? ` · ${unitLabel(r)} each` : ''}
                 </div>
+                {(() => {
+                  const badge = isolationBadge(r);
+                  if (!badge) return null;
+                  return (
+                    <div style={{ marginTop: '6px' }}>
+                      <Label color={badge.color} isCompact>
+                        {badge.label}
+                      </Label>
+                    </div>
+                  );
+                })()}
               </CardBody>
             </Card>
           </GalleryItem>

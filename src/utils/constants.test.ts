@@ -13,7 +13,10 @@ import {
   totalGpuEquivalents,
   getResourceColor,
   isSystemBooking,
+  isolationBadge,
+  unitLabel,
   FALLBACK_GPU_RESOURCES,
+  GPUResource,
 } from './constants';
 
 describe('isSystemBooking', () => {
@@ -223,5 +226,68 @@ describe('isPastDate', () => {
 
   it('returns false for today', () => {
     expect(isPastDate(todayStr())).toBe(false);
+  });
+});
+
+describe('isolationBadge', () => {
+  it('returns null for device-plugin resources', () => {
+    const r: GPUResource = { name: 'Full GPU', type: 'nvidia.com/gpu', count: 8, share: 1, gpuEquivalent: 1 };
+    expect(isolationBadge(r)).toBeNull();
+  });
+
+  it('labels consumable shares as shared with no isolation', () => {
+    const r: GPUResource = {
+      name: 'A100 Shares', type: 'nvidia.com/gpu', count: 16, share: 0.25, gpuEquivalent: 0.25,
+      draMode: true, pool: 'dra-share', isolation: 'shared', maxSharesPerDevice: 4, deviceMemoryGb: 40,
+    };
+    const badge = isolationBadge(r);
+    expect(badge).toEqual({ label: 'Shared (no isolation)', color: 'teal' });
+  });
+
+  it('labels dedicated DRA resources', () => {
+    const r: GPUResource = {
+      name: 'H100 GPU', type: 'dra-mig', count: 1, share: 0.1, gpuEquivalent: 1,
+      draMode: true, pool: 'dra-mig', isolation: 'dedicated',
+    };
+    expect(isolationBadge(r)).toEqual({ label: 'Dedicated', color: 'grey' });
+  });
+
+  it('labels MIG resources', () => {
+    const r: GPUResource = {
+      name: 'MIG 1g.12gb', type: 'mig-1g.12gb', count: 4, share: 0.1, gpuEquivalent: 0.25,
+      draMode: true, pool: 'dra-mig', isolation: 'mig',
+    };
+    expect(isolationBadge(r)).toEqual({ label: 'MIG partition', color: 'purple' });
+  });
+});
+
+describe('unitLabel', () => {
+  it('describes a consumable share as fractional GPU with memory', () => {
+    const r: GPUResource = {
+      name: 'A100 Shares', type: 'nvidia.com/gpu', count: 16, share: 0.25, gpuEquivalent: 0.25,
+      draMode: true, pool: 'dra-share', isolation: 'shared', maxSharesPerDevice: 4, deviceMemoryGb: 40,
+    };
+    expect(unitLabel(r)).toBe('0.25 GPU (10 GB)');
+  });
+
+  it('omits memory when unknown', () => {
+    const r: GPUResource = {
+      name: 'A100 Shares', type: 'nvidia.com/gpu', count: 16, share: 0.25, gpuEquivalent: 0.25,
+      draMode: true, pool: 'dra-share', isolation: 'shared', maxSharesPerDevice: 4,
+    };
+    expect(unitLabel(r)).toBe('0.25 GPU');
+  });
+
+  it('returns plain GPU for device-plugin resources', () => {
+    const r: GPUResource = { name: 'Full GPU', type: 'nvidia.com/gpu', count: 8, share: 1, gpuEquivalent: 1 };
+    expect(unitLabel(r)).toBe('1 GPU');
+  });
+
+  it('returns plain GPU for dedicated DRA resources', () => {
+    const r: GPUResource = {
+      name: 'H100 GPU', type: 'dra-mig', count: 1, share: 0.1, gpuEquivalent: 1,
+      draMode: true, pool: 'dra-mig', isolation: 'dedicated',
+    };
+    expect(unitLabel(r)).toBe('1 GPU');
   });
 });

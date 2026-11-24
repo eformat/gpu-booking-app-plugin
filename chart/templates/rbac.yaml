@@ -64,6 +64,15 @@ rules:
   - apiGroups: ["kueue.x-k8s.io"]
     resources: ["resourceflavors"]
     verbs: ["list"]
+  # DRA (resource.k8s.io/v1): discovery reads ResourceSlices + DeviceClass;
+  # reservations provision per-namespace ResourceClaimTemplates referenced by
+  # DRA HardwareProfiles.
+  - apiGroups: ["resource.k8s.io"]
+    resources: ["resourceslices", "deviceclasses"]
+    verbs: ["get", "list"]
+  - apiGroups: ["resource.k8s.io"]
+    resources: ["resourceclaimtemplates"]
+    verbs: ["list", "create", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

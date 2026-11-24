@@ -106,32 +106,78 @@ func RunDiscovery() (*DiscoveryResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("discovering GPU nodes: %w", err)
 	}
-	if len(nodes) == 0 {
+
+	// DRA discovery (dual-mode): runs alongside device-plugin discovery so a
+	// cluster can serve device-plugin pools and DRA pools simultaneously.
+	// The slice body is fetched once: it yields both the DRA catalog specs
+	// and the set of DRA-managed nodes.
+	draBody, err := fetchDRASliceBody()
+	if err != nil {
+		slog.Warn("dra discovery failed, continuing with device-plugin specs", "error", err)
+		draBody = nil
+	}
+	draNodes := draSliceNodeNames(draBody)
+
+	// A device is either device-plugin-managed or DRA-managed, never both:
+	// exclude DRA-managed nodes from extended-resource counting, otherwise
+	// the same physical GPUs are double-booked across the two surfaces.
+	pluginNodes := excludeDRANodes(nodes, draNodes)
+
+	var devicePluginSpecs []database.GPUResourceSpec
+	hasGPUQuotaName := false
+	flavorName := ""
+	if len(pluginNodes) > 0 {
+		flavors, _ := discoverResourceFlavors()
+
+		flavorName = matchFlavorToNodes(flavors, pluginNodes)
+
+		var fullGPUMemoryMiB int
+		for _, n := range pluginNodes {
+			if n.GPUMemoryMiB > 0 {
+				fullGPUMemoryMiB = n.GPUMemoryMiB
+				break
+			}
+		}
+
+		var gpuProduct string
+		for _, n := range pluginNodes {
+			if n.GPUProduct != "" {
+				gpuProduct = n.GPUProduct
+				break
+			}
+		}
+
+		devicePluginSpecs = buildResourceSpecs(pluginNodes, fullGPUMemoryMiB, gpuProduct)
+		for _, spec := range devicePluginSpecs {
+			if spec.Type == "nvidia.com/gpu" {
+				hasGPUQuotaName = true
+				break
+			}
+		}
+	}
+
+	var draSpecs []database.GPUResourceSpec
+	if len(draBody) > 0 {
+		draSpecs = parseDRASlices(draBody, hasGPUQuotaName)
+		if len(draSpecs) > 0 {
+			slog.Info("dra discovery: resources discovered", "specs", len(draSpecs), "draNodes", len(draNodes))
+		}
+	}
+
+	if len(nodes) == 0 && len(draSpecs) == 0 {
 		return nil, nil
 	}
 
-	flavors, _ := discoverResourceFlavors()
+	resources := append(devicePluginSpecs, draSpecs...)
+	normalizeShares(resources)
 
-	flavorName := matchFlavorToNodes(flavors, nodes)
-
-	var fullGPUMemoryMiB int
-	for _, n := range nodes {
-		if n.GPUMemoryMiB > 0 {
-			fullGPUMemoryMiB = n.GPUMemoryMiB
-			break
-		}
-	}
-
-	var gpuProduct string
-	for _, n := range nodes {
-		if n.GPUProduct != "" {
-			gpuProduct = n.GPUProduct
-			break
-		}
-	}
-
-	resources := buildResourceSpecs(nodes, fullGPUMemoryMiB, gpuProduct)
 	totalCPU, totalMemGi := computeNodeTotals(nodes)
+	if len(nodes) == 0 {
+		// DRA-only cluster: keep the previous (static) CPU/memory totals so
+		// booking defaults remain sane.
+		totalCPU = database.GetGPUConfig().TotalCPU
+		totalMemGi = database.GetGPUConfig().TotalMemory
+	}
 
 	return &DiscoveryResult{
 		Resources:   resources,
@@ -139,6 +185,37 @@ func RunDiscovery() (*DiscoveryResult, error) {
 		TotalMemory: totalMemGi,
 		FlavorName:  flavorName,
 	}, nil
+}
+
+// excludeDRANodes drops nodes whose devices are published via DRA slices —
+// those GPUs are managed by the DRA driver and must not also count as
+// device-plugin extended-resource units.
+func excludeDRANodes(nodes []discoveredNode, draNodes map[string]bool) []discoveredNode {
+	if len(draNodes) == 0 {
+		return nodes
+	}
+	filtered := make([]discoveredNode, 0, len(nodes))
+	for _, n := range nodes {
+		if draNodes[n.Name] {
+			continue
+		}
+		filtered = append(filtered, n)
+	}
+	return filtered
+}
+
+// normalizeShares recomputes each spec's Share (fraction of the total pool)
+// across the merged device-plugin + DRA spec set.
+func normalizeShares(specs []database.GPUResourceSpec) {
+	totalEquivUnits := 0.0
+	for i := range specs {
+		totalEquivUnits += float64(specs[i].Count) * specs[i].GPUEquivalent
+	}
+	if totalEquivUnits > 0 {
+		for i := range specs {
+			specs[i].Share = specs[i].GPUEquivalent / totalEquivUnits
+		}
+	}
 }
 
 func discoverGPUNodes() ([]discoveredNode, error) {

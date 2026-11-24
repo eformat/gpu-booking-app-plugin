@@ -8,6 +8,7 @@ import {
   Button,
   Form,
   FormGroup,
+  Label,
   TextArea,
   Alert,
   NumberInput,
@@ -25,6 +26,8 @@ import {
   HOUR_OPTIONS,
   formatHour,
   getUtcOffsetHours,
+  isolationBadge,
+  unitLabel,
 } from '../utils/constants';
 
 interface BookingModalProps {
@@ -265,10 +268,22 @@ const BookingModal: React.FC<BookingModalProps> = ({
                   }}
                 >
                   <div>
-                    <div style={{ fontSize: '14px', fontWeight: 500 }}>{r.name}</div>
+                    <div style={{ fontSize: '14px', fontWeight: 500 }}>
+                      {r.name}
+                      {(() => {
+                        const badge = isolationBadge(r);
+                        return badge ? (
+                          <span style={{ marginLeft: '8px' }}>
+                            <Label color={badge.color} isCompact>
+                              {badge.label}
+                            </Label>
+                          </span>
+                        ) : null;
+                      })()}
+                    </div>
                     <div style={{ fontSize: '12px', color: 'var(--pf-t--global--text--color--regular)', opacity: 0.7 }}>
                       {maxAvail} of {r.count} available
-                      {equiv < 1 && ` \u00B7 ${equiv} GPU equiv each`}
+                      {(r.draMode || equiv < 1) && ` \u00B7 ${unitLabel(r)} each`}
                     </div>
                   </div>
                   <NumberInput

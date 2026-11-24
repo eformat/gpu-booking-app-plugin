@@ -35,7 +35,25 @@ type GPUResourceSpec struct {
 	Count         int     `json:"count"`
 	Share         float64 `json:"share"`
 	GPUEquivalent float64 `json:"gpuEquivalent"`
+
+	// DRA (Dynamic Resource Allocation) backing. Empty/zero for resources
+	// discovered via the legacy device plugin (node allocatable).
+	DRAMode            bool   `json:"draMode,omitempty"`
+	Pool               string `json:"pool,omitempty"`               // DRA pool (ResourceSlice pool.name)
+	Isolation          string `json:"isolation,omitempty"`          // "dedicated" | "shared" | "mig"
+	MaxSharesPerDevice int    `json:"maxSharesPerDevice,omitempty"` // consumable shares per physical device
+	DeviceMemoryGB     int    `json:"deviceMemoryGb,omitempty"`     // full-device memory in GB
 }
+
+// DRA isolation modes for GPUResourceSpec.Isolation.
+const (
+	IsolationDedicated = "dedicated"
+	IsolationShared    = "shared"
+	IsolationMIG       = "mig"
+)
+
+// DRADeviceClass is the DeviceClass the NVIDIA DRA driver publishes.
+const DRADeviceClass = "gpu.nvidia.com"
 
 type GPUConfig struct {
 	Resources   []GPUResourceSpec

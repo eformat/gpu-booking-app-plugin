@@ -1,9 +1,11 @@
 import * as React from 'react';
-import { Card, CardBody, Title, Tooltip } from '@patternfly/react-core';
+import { Card, CardBody, Label, Title, Tooltip } from '@patternfly/react-core';
 import {
   Booking,
   GPUResource,
   getResourceColor,
+  isolationBadge,
+  IsolationBadge as IsolationBadgeT,
   FREE_COLOR,
   CONSUMED_COLOR,
   RESERVED_COLOR,
@@ -92,6 +94,9 @@ const GpuUsagePanel: React.FC<GpuUsagePanelProps> = ({ bookings, resources, sele
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           {usageData.map((usage) => {
             const { resource, totalSlots } = usage;
+            const badge: IsolationBadgeT | null = isolationBadge(resource);
+            const unitNoun = resource.draMode && resource.isolation === 'shared' ? 'Share' : 'Unit';
+            const countNoun = unitNoun === 'Share' ? 'shares' : 'units';
             return (
               <div key={resource.type}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
@@ -107,8 +112,13 @@ const GpuUsagePanel: React.FC<GpuUsagePanelProps> = ({ bookings, resources, sele
                     />
                     <span style={{ fontSize: '14px', fontWeight: 600 }}>{resource.name}</span>
                     <span style={{ fontSize: '12px', color: 'var(--pf-t--global--text--color--regular)', opacity: 0.7 }}>
-                      {resource.count} units
+                      {resource.count} {countNoun}
                     </span>
+                    {badge && (
+                      <Label color={badge.color} isCompact>
+                        {badge.label}
+                      </Label>
+                    )}
                   </div>
                   <span style={{ fontSize: '12px', color: 'var(--pf-t--global--text--color--regular)', opacity: 0.7 }}>
                     {usage.totalBooked} / {totalSlots} booked
@@ -130,7 +140,7 @@ const GpuUsagePanel: React.FC<GpuUsagePanelProps> = ({ bookings, resources, sele
                         key={unitIdx}
                         content={
                           <div>
-                            Unit {unitIdx + 1}: {unitBookings.length > 0 ? `booked` : 'free'}
+                            {unitNoun} {unitIdx + 1}: {unitBookings.length > 0 ? `booked` : 'free'}
                             {unitBookings.map((b) => (
                               <div key={b.id}>{b.user} ({b.source})</div>
                             ))}
@@ -184,7 +194,7 @@ const GpuUsagePanel: React.FC<GpuUsagePanelProps> = ({ bookings, resources, sele
                         key={unitIdx}
                         content={
                           <div>
-                            Unit {unitIdx + 1}: {unitBookings.length > 0 ? `${unitBookings.length} slot(s) booked` : 'free'}
+                            {unitNoun} {unitIdx + 1}: {unitBookings.length > 0 ? `${unitBookings.length} slot(s) booked` : 'free'}
                             {unitBookings.map((b) => (
                               <div key={b.id}>
                                 {b.user} ({b.slotType}) {b.source === 'consumed' ? '\u26A1' : ''}

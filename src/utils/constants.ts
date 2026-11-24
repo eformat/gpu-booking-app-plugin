@@ -4,6 +4,49 @@ export interface GPUResource {
   count: number;
   share: number;
   gpuEquivalent: number;
+  /** DRA-backed resource (ResourceSlice-discovered) */
+  draMode?: boolean;
+  /** DRA pool name (ResourceSlice pool.name) */
+  pool?: string;
+  /** Isolation semantics: dedicated | shared (consumable shares, no isolation) | mig */
+  isolation?: 'dedicated' | 'shared' | 'mig';
+  /** Consumable shares per physical device (shared mode) */
+  maxSharesPerDevice?: number;
+  /** Full-device memory in GB */
+  deviceMemoryGb?: number;
+}
+
+export type IsolationBadge = { label: string; color: 'teal' | 'grey' | 'purple' };
+
+/** Isolation badge for a resource card/row; null for plain device-plugin GPUs. */
+export function isolationBadge(r: GPUResource): IsolationBadge | null {
+  if (!r.draMode) return null;
+  switch (r.isolation) {
+    case 'shared':
+      return { label: 'Shared (no isolation)', color: 'teal' };
+    case 'mig':
+      return { label: 'MIG partition', color: 'purple' };
+    case 'dedicated':
+      return { label: 'Dedicated', color: 'grey' };
+    default:
+      return null;
+  }
+}
+
+/**
+ * Per-unit description for a resource: fractional GPUs for consumable shares
+ * ("0.25 GPU (12 GB)"), plain units otherwise.
+ */
+export function unitLabel(r: GPUResource): string {
+  if (r.draMode && r.isolation === 'shared' && r.maxSharesPerDevice && r.maxSharesPerDevice > 1) {
+    const frac = (1 / r.maxSharesPerDevice).toFixed(2).replace(/\.?0+$/, '');
+    if (r.deviceMemoryGb && r.deviceMemoryGb > 0) {
+      const shareMemGb = Math.round((r.deviceMemoryGb / r.maxSharesPerDevice) * 10) / 10;
+      return `${frac} GPU (${shareMemGb} GB)`;
+    }
+    return `${frac} GPU`;
+  }
+  return '1 GPU';
 }
 
 export interface Booking {

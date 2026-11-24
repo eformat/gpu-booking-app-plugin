@@ -1,0 +1,362 @@
+package kube
+
+import (
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"math"
+	"strconv"
+	"strings"
+
+	"github.com/eformat/gpu-booking-plugin/pkg/database"
+)
+
+// DRA discovery: reads resource.k8s.io/v1 ResourceSlices published by the
+// NVIDIA DRA driver (DeviceClass gpu.nvidia.com) and maps consumable-share
+// and dedicated devices onto booking catalog specs. Devices carrying MIG
+// profile attributes or partitionable-device counters are skipped for now
+// (dynamic MIG booking lands with the DRA Phase 2 work).
+
+const draResourceSlicesPath = "/apis/resource.k8s.io/v1/resourceslices"
+
+type draSliceList struct {
+	Items []draSlice `json:"items"`
+}
+
+type draSlice struct {
+	Spec struct {
+		Driver   string `json:"driver"`
+		NodeName string `json:"nodeName"`
+		Pool     struct {
+			Name string `json:"name"`
+		} `json:"pool"`
+		Devices []draDevice `json:"devices"`
+	} `json:"spec"`
+}
+
+type draDevice struct {
+	Name       string                       `json:"name"`
+	Attributes map[string]draAttribute      `json:"attributes"`
+	Capacity   map[string]draDeviceCapacity `json:"capacity"`
+	// Consumable capacity (DRA consumable shares, OCP 5 / k8s 1.36): when
+	// true the device can back multiple claims, one per share.
+	AllowMultipleAllocations bool `json:"allowMultipleAllocations"`
+	// Partitionable devices (KEP-4815): presence means a MIG-style partition
+	// device — skipped until Phase 2.
+	ConsumesCounters json.RawMessage `json:"consumesCounters,omitempty"`
+}
+
+type draAttribute struct {
+	Int     int64  `json:"int,omitempty"`
+	Bool    bool   `json:"bool,omitempty"`
+	String  string `json:"string,omitempty"`
+	Version string `json:"version,omitempty"`
+}
+
+type draDeviceCapacity struct {
+	Value         string            `json:"value,omitempty"`
+	RequestPolicy *draRequestPolicy `json:"requestPolicy,omitempty"`
+}
+
+type draRequestPolicy struct {
+	Default    string         `json:"default,omitempty"`
+	ValidRange *draValidRange `json:"validRange,omitempty"`
+}
+
+type draValidRange struct {
+	Min  string `json:"min,omitempty"`
+	Max  string `json:"max,omitempty"`
+	Step string `json:"step,omitempty"`
+}
+
+// Attribute keys published by the NVIDIA DRA driver / FGO dra-plugin-gpu.
+const (
+	draAttrProductName = "gpu.nvidia.com/productName"
+	draAttrModel       = "gpu.nvidia.com/model"
+	draAttrProfile     = "gpu.nvidia.com/profile"
+	draAttrMIGProfile  = "gpu.nvidia.com/mig-profile"
+	draAttrType        = "gpu.nvidia.com/type"
+)
+
+// Attribute keys published for GPU devices. The NVIDIA DRA driver publishes
+// unqualified keys (productName, type, uuid); FGO's dra-plugin-gpu publishes
+// gpu.nvidia.com/-qualified keys. Read both.
+var draProductAttrKeys = []string{
+	draAttrProductName, "productName", draAttrModel, "model",
+}
+
+var draTypeAttrKeys = []string{draAttrType, "type"}
+
+// discoverDRAResources lists DRA ResourceSlices and returns the raw list
+// body (nil when the DRA API is absent). Callers parse node coverage and
+// specs from the same body — one API call per discovery cycle. A cluster
+// without the DRA API (404) yields no error, so pre-OCP-5 clusters keep
+// using device-plugin discovery alone.
+func fetchDRASliceBody() ([]byte, error) {
+	if !K8sAvailable() {
+		return nil, nil
+	}
+	body, err := K8sGet(draResourceSlicesPath + "?limit=500")
+	if err != nil {
+		if strings.Contains(err.Error(), "returned 404") {
+			slog.Debug("dra discovery: resource.k8s.io/v1 not served, skipping")
+			return nil, nil
+		}
+		return nil, fmt.Errorf("listing resourceslices: %w", err)
+	}
+	return body, nil
+}
+
+// draSliceNodeNames returns the set of nodes publishing DRA slices for the
+// NVIDIA device class. Devices on these nodes are DRA-managed and must not
+// also be counted by device-plugin (extended-resource) discovery.
+func draSliceNodeNames(body []byte) map[string]bool {
+	nodes := map[string]bool{}
+	if len(body) == 0 {
+		return nodes
+	}
+	var list draSliceList
+	if err := json.Unmarshal(body, &list); err != nil {
+		return nodes
+	}
+	for _, slice := range list.Items {
+		if slice.Spec.Driver != database.DRADeviceClass {
+			continue
+		}
+		if name := slice.Spec.NodeName; name != "" {
+			nodes[name] = true
+		}
+	}
+	return nodes
+}
+
+// parseDRASlices converts ResourceSlice JSON into booking catalog specs.
+// The DRA driver publishes one pool per node, so devices are aggregated per
+// (product, isolation mode) ACROSS pools — matching how device-plugin
+// discovery aggregates nodes into one catalog entry. Consumable-share
+// capacity defines how many claims each physical device can back.
+func parseDRASlices(body []byte, hasGPUQuotaName bool) []database.GPUResourceSpec {
+	var list draSliceList
+	if err := json.Unmarshal(body, &list); err != nil {
+		slog.Error("dra discovery: failed to parse resourceslice list", "error", err)
+		return nil
+	}
+
+	type deviceGroup struct {
+		product   string
+		shared    bool
+		devices   int
+		maxShares int
+		memoryGB  int
+		pools     []string // insertion order, for the informational Pool field
+		poolSeen  map[string]bool
+	}
+	groups := map[string]*deviceGroup{}
+	var order []string
+	skippedNonGPU := 0
+	skippedProfiles := 0
+
+	addDevice := func(g *deviceGroup) {
+		key := g.product + "\x00" + isolationKind(g.shared)
+		existing, ok := groups[key]
+		if !ok {
+			g.poolSeen = map[string]bool{}
+			groups[key] = g
+			order = append(order, key)
+			return
+		}
+		existing.devices += g.devices
+		if g.maxShares > existing.maxShares {
+			existing.maxShares = g.maxShares
+		}
+		if g.memoryGB > existing.memoryGB {
+			existing.memoryGB = g.memoryGB
+		}
+	}
+
+	trackPool := func(g *deviceGroup, pool string) {
+		if pool == "" || g.poolSeen[pool] {
+			return
+		}
+		g.poolSeen[pool] = true
+		g.pools = append(g.pools, pool)
+	}
+
+	for _, slice := range list.Items {
+		if slice.Spec.Driver != database.DRADeviceClass {
+			continue
+		}
+		pool := slice.Spec.Pool.Name
+		if pool == "" {
+			pool = slice.Spec.NodeName
+		}
+
+		for _, dev := range slice.Spec.Devices {
+			// Only plain GPU devices: skip MIG partitions / VFIO devices
+			// (type attribute) and profile/counter-shaped devices
+			// (dynamic MIG lands in Phase 2).
+			if t := attrStringAny(dev, draTypeAttrKeys); t != "" && t != "gpu" {
+				skippedNonGPU++
+				continue
+			}
+			if dev.ConsumesCounters != nil {
+				skippedProfiles++
+				continue
+			}
+			if _, ok := dev.Attributes[draAttrProfile]; ok {
+				skippedProfiles++
+				continue
+			}
+			if _, ok := dev.Attributes[draAttrMIGProfile]; ok {
+				skippedProfiles++
+				continue
+			}
+
+			product := attrStringAny(dev, draProductAttrKeys)
+
+			maxShares := 1
+			if dev.AllowMultipleAllocations {
+				maxShares = sharesPerDevice(dev)
+			}
+
+			memoryGB := 0
+			if memStr, ok := dev.Capacity["memory"]; ok {
+				memoryGB = parseMemoryGi(memStr.Value)
+			}
+
+			g := &deviceGroup{
+				product:   product,
+				shared:    maxShares > 1,
+				devices:   1,
+				maxShares: maxShares,
+				memoryGB:  memoryGB,
+			}
+			addDevice(g)
+			key := g.product + "\x00" + isolationKind(g.shared)
+			trackPool(groups[key], pool)
+		}
+	}
+
+	if skippedProfiles > 0 {
+		slog.Info("dra discovery: skipped MIG/profile devices until Phase 2", "devices", skippedProfiles)
+	}
+	if skippedNonGPU > 0 {
+		slog.Info("dra discovery: skipped non-GPU devices", "devices", skippedNonGPU)
+	}
+
+	// With a single DRA product group and no device-plugin GPU the plain
+	// "nvidia.com/gpu" quota name is kept (matches the deviceClassMappings
+	// convention verified on ocp5-3). Otherwise groups get product-derived
+	// logical quota names so ClusterQueue quotas and Kueue flavor usage stay
+	// unambiguous per catalog entry.
+	qualifyNames := hasGPUQuotaName || len(groups) > 1
+
+	var specs []database.GPUResourceSpec
+	for _, key := range order {
+		g := groups[key]
+		product := formatGPUProductName(g.product)
+
+		spec := database.GPUResourceSpec{
+			DRAMode:        true,
+			DeviceMemoryGB: g.memoryGB,
+		}
+
+		if g.shared {
+			spec.Name = product + " Shares"
+			spec.Isolation = database.IsolationShared
+			spec.MaxSharesPerDevice = g.maxShares
+			spec.Count = g.devices * g.maxShares
+			spec.GPUEquivalent = math.Round((1.0/float64(g.maxShares))*1000) / 1000
+		} else {
+			spec.Name = product + " GPU"
+			spec.Isolation = database.IsolationDedicated
+			spec.Count = g.devices
+			spec.GPUEquivalent = 1.0
+		}
+		if qualifyNames {
+			spec.Type = draLogicalQuotaName(g.product, g.shared)
+		} else {
+			spec.Type = "nvidia.com/gpu"
+		}
+		if len(g.pools) > 0 {
+			spec.Pool = g.pools[0] // informational: first pool backing this entry
+		}
+		specs = append(specs, spec)
+	}
+
+	return specs
+}
+
+func isolationKind(shared bool) string {
+	if shared {
+		return "shared"
+	}
+	return "dedicated"
+}
+
+// draLogicalQuotaName derives a stable, Kueue-safe quota resource name from
+// the device product, e.g. "NVIDIA A100-SXM4-40GB" (shared) ->
+// "a100-sxm4-40gb-share". Stable across node counts and pool churn.
+func draLogicalQuotaName(product string, shared bool) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(product) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	normalized := strings.Trim(b.String(), "-")
+	normalized = strings.TrimPrefix(normalized, "nvidia-")
+	if normalized == "" {
+		normalized = "gpu"
+	}
+	if shared {
+		return normalized + "-share"
+	}
+	return normalized + "-gpu"
+}
+
+func attrString(dev draDevice, key string) string {
+	if attr, ok := dev.Attributes[key]; ok {
+		return attr.String
+	}
+	return ""
+}
+
+// attrStringAny returns the first present string attribute among candidate
+// keys (the NVIDIA DRA driver and FGO's plugin use different key schemes).
+func attrStringAny(dev draDevice, keys []string) string {
+	for _, key := range keys {
+		if v := attrString(dev, key); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// parseQuotaInt parses a Quantity string that must be a plain integer count
+// (consumable-share validRange values are counts like "4").
+func parseQuotaInt(s string) (int, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("empty quantity")
+	}
+	return strconv.Atoi(s)
+}
+
+// sharesPerDevice extracts the consumable-share count from the device's
+// "shares" capacity requestPolicy (validRange.max). Falls back to 1 when the
+// driver publishes no policy — a claim then consumes the whole device.
+func sharesPerDevice(dev draDevice) int {
+	cap, ok := dev.Capacity["shares"]
+	if !ok || cap.RequestPolicy == nil || cap.RequestPolicy.ValidRange == nil {
+		return 1
+	}
+	max, err := parseQuotaInt(cap.RequestPolicy.ValidRange.Max)
+	if err != nil || max <= 0 {
+		return 1
+	}
+	return max
+}

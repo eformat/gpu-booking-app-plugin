@@ -453,6 +453,46 @@ func applyUserReservation(res userReservation) error {
 			},
 		}
 
+		// DRA-backed resources: the profile references a namespaced
+		// ResourceClaimTemplate the reservation also provisions, so workloads
+		// admitted through it get a DRA ResourceClaim (DeviceClass
+		// gpu.nvidia.com; consumable shares make claims co-allocate on one
+		// device, one share per claim).
+		if specInfo, ok := database.GPUSpecByType(gpuRes); ok && specInfo.DRAMode {
+			rctName := profileName + "-rct"
+			rct := map[string]any{
+				"apiVersion": "resource.k8s.io/v1",
+				"kind":       "ResourceClaimTemplate",
+				"metadata": map[string]any{
+					"name":      rctName,
+					"namespace": ns,
+					"labels": map[string]string{
+						"rhai-tmm.dev/until": untilStr,
+					},
+				},
+				"spec": map[string]any{
+					"spec": map[string]any{
+						"devices": map[string]any{
+							"requests": []map[string]any{
+								{
+									"name": "gpu",
+									"exactly": map[string]any{
+										"deviceClassName": database.DRADeviceClass,
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+			if err := k8sApply(fmt.Sprintf("/apis/resource.k8s.io/v1/namespaces/%s/resourceclaimtemplates/%s", ns, rctName), rct); err != nil {
+				slog.Error("reservation sync: failed to apply ResourceClaimTemplate", "namespace", ns, "template", rctName, "error", err)
+			}
+			hp["spec"].(map[string]any)["dra"] = map[string]any{
+				"resourceClaimTemplateName": rctName,
+			}
+		}
+
 		if err := k8sApply(
 			fmt.Sprintf("/apis/infrastructure.opendatahub.io/v1/namespaces/%s/hardwareprofiles/%s", ns, profileName),
 			hp,
@@ -702,20 +742,10 @@ func drainClusterQueue(cqName, ns string) {
 		return
 	}
 
-	// Delete LocalQueue and HardwareProfiles immediately to block new submissions
-	hpItems, err := k8sListWithLabel(
-		fmt.Sprintf("/apis/infrastructure.opendatahub.io/v1/namespaces/%s/hardwareprofiles", ns),
-		"rhai-tmm.dev/until",
-	)
-	if err == nil {
-		for _, hp := range hpItems {
-			if err := k8sDeletePath(fmt.Sprintf(
-				"/apis/infrastructure.opendatahub.io/v1/namespaces/%s/hardwareprofiles/%s", ns, hp.Name,
-			)); err != nil {
-				slog.Error("reservation drain: failed to delete HardwareProfile", "namespace", ns, "profile", hp.Name, "error", err)
-			}
-		}
-	}
+	// Delete LocalQueue, HardwareProfiles and ResourceClaimTemplates
+	// immediately to block new submissions
+	deleteLabeledInNamespace(ns, "/apis/infrastructure.opendatahub.io/v1/namespaces/%s/hardwareprofiles", "reservation drain: failed to delete HardwareProfile")
+	deleteLabeledInNamespace(ns, "/apis/resource.k8s.io/v1/namespaces/%s/resourceclaimtemplates", "reservation drain: failed to delete ResourceClaimTemplate")
 
 	if err := k8sDeletePath(fmt.Sprintf(
 		"/apis/kueue.x-k8s.io/v1beta1/namespaces/%s/localqueues/reserved", ns,
@@ -762,19 +792,8 @@ func finalizeDrainedClusterQueue(item k8sResourceItem) bool {
 }
 
 func deleteUserReservationResources(cqName, ns string) {
-	hpItems, err := k8sListWithLabel(
-		fmt.Sprintf("/apis/infrastructure.opendatahub.io/v1/namespaces/%s/hardwareprofiles", ns),
-		"rhai-tmm.dev/until",
-	)
-	if err == nil {
-		for _, hp := range hpItems {
-			if err := k8sDeletePath(fmt.Sprintf(
-				"/apis/infrastructure.opendatahub.io/v1/namespaces/%s/hardwareprofiles/%s", ns, hp.Name,
-			)); err != nil {
-				slog.Error("reservation cleanup: failed to delete HardwareProfile", "namespace", ns, "profile", hp.Name, "error", err)
-			}
-		}
-	}
+	deleteLabeledInNamespace(ns, "/apis/infrastructure.opendatahub.io/v1/namespaces/%s/hardwareprofiles", "reservation cleanup: failed to delete HardwareProfile")
+	deleteLabeledInNamespace(ns, "/apis/resource.k8s.io/v1/namespaces/%s/resourceclaimtemplates", "reservation cleanup: failed to delete ResourceClaimTemplate")
 
 	if err := k8sDeletePath(fmt.Sprintf(
 		"/apis/kueue.x-k8s.io/v1beta1/namespaces/%s/localqueues/reserved", ns,
@@ -786,6 +805,23 @@ func deleteUserReservationResources(cqName, ns string) {
 		"/apis/kueue.x-k8s.io/v1beta1/clusterqueues/%s", cqName,
 	)); err != nil {
 		slog.Error("reservation cleanup: failed to delete ClusterQueue", "clusterqueue", cqName, "error", err)
+	}
+}
+
+// deleteLabeledInNamespace deletes every resource listed at basePathFormat
+// (a format string taking the namespace) that carries the reservation until
+// label. Used for HardwareProfiles and DRA ResourceClaimTemplates during
+// reservation drain/cleanup.
+func deleteLabeledInNamespace(ns, basePathFormat, errContext string) {
+	basePath := fmt.Sprintf(basePathFormat, ns)
+	items, err := k8sListWithLabel(basePath, "rhai-tmm.dev/until")
+	if err != nil {
+		return
+	}
+	for _, item := range items {
+		if err := k8sDeletePath(basePath + "/" + item.Name); err != nil {
+			slog.Error(errContext, "namespace", ns, "name", item.Name, "error", err)
+		}
 	}
 }
 
