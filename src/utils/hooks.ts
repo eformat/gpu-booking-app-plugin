@@ -1,10 +1,11 @@
 import * as React from 'react';
 import { Booking, GPUResource, FALLBACK_GPU_RESOURCES, DEFAULT_BOOKING_WINDOW_DAYS } from './constants';
-import { getBookings, getConfig, getPreemptedWorkloads, PreemptedWorkload } from './api';
+import { getBookings, getConfig, getPreemptedWorkloads, CoveredUsage, PreemptedWorkload } from './api';
 
 export interface BookingsState {
   bookings: Booking[];
   activeReservations: Record<string, string>;
+  coveredUsage: CoveredUsage[];
   currentUser: string;
   loading: boolean;
   fetchBookings: () => Promise<void>;
@@ -13,6 +14,7 @@ export interface BookingsState {
 export function useBookings(): BookingsState {
   const [bookings, setBookings] = React.useState<Booking[]>([]);
   const [activeReservations, setActiveReservations] = React.useState<Record<string, string>>({});
+  const [coveredUsage, setCoveredUsage] = React.useState<CoveredUsage[]>([]);
   const [currentUser, setCurrentUser] = React.useState('');
   const [loading, setLoading] = React.useState(true);
 
@@ -21,6 +23,7 @@ export function useBookings(): BookingsState {
       const result = await getBookings();
       setBookings(result.bookings || []);
       setActiveReservations(result.activeReservations || {});
+      setCoveredUsage(result.coveredUsage || []);
       setCurrentUser(result.currentUser || '');
     } catch (e) {
       console.warn('Failed to fetch bookings:', e);
@@ -34,7 +37,7 @@ export function useBookings(): BookingsState {
     return () => clearInterval(interval);
   }, [fetchBookings]);
 
-  return { bookings, activeReservations, currentUser, loading, fetchBookings };
+  return { bookings, activeReservations, coveredUsage, currentUser, loading, fetchBookings };
 }
 
 export interface ConfigState {

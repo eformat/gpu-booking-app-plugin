@@ -575,6 +575,23 @@ func removeStaleReservations(activeUsers map[string]bool) error {
 			continue
 		}
 
+		// Config-drift guard: discovery can temporarily drop or rename a
+		// booked resource type (e.g. the MIG surface flapping during
+		// whole-board claim churn), which empties the active set without any
+		// booking actually expiring. Draining in that state destroys live
+		// reservations. Skip CQs whose user still holds reserved bookings for
+		// resource types the current GPU config doesn't know about. A CQ kept
+		// alive by this guard is cleaned up once discovery repopulates the
+		// resource (active set heals) or by cleanExpiredReservations when the
+		// until label lapses.
+		if user, found := strings.CutPrefix(item.Name, "system-"); found {
+			if hasBookingsForUnknownResource(user) {
+				slog.Warn("reservation sync: skipping drain, booked resource missing from GPU config (discovery drift?)",
+					"clusterqueue", item.Name, "user", user)
+				continue
+			}
+		}
+
 		ns := namespaceForCQ(item.Name, item.Labels)
 
 		// Already draining — check if ready to finalize

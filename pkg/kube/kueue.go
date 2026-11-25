@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/eformat/gpu-booking-plugin/pkg/database"
@@ -57,8 +58,9 @@ type k8sNamespace struct {
 }
 
 type k8sNamespaceMetadata struct {
-	Name   string            `json:"name"`
-	Labels map[string]string `json:"labels"`
+	Name        string            `json:"name"`
+	Labels      map[string]string `json:"labels"`
+	Annotations map[string]string `json:"annotations"`
 }
 
 type resourceUsage struct {
@@ -259,6 +261,9 @@ func kueueSync() error {
 	if err != nil {
 		return fmt.Errorf("listing local queues: %w", err)
 	}
+
+	// The cycle rebuilds the whole picture from live Kueue state.
+	resetCoveredUsage()
 
 	aggregated := map[nsResKey]int{}
 	nsCache := map[string]string{}
@@ -501,11 +506,24 @@ func getNamespaceRequester(ns string) (string, error) {
 	if err := json.Unmarshal(body, &namespace); err != nil {
 		return "", fmt.Errorf("parsing namespace: %w", err)
 	}
-	owner := namespace.Metadata.Labels["rhai-tmm.dev/owner"]
-	if owner == "" {
-		return ns, nil
+	// Resolution order:
+	//  1. rhai-tmm.dev/owner label (pool convention, where set)
+	//  2. openshift.io/requester annotation — the OpenShift namespace
+	//     creator (user-admin → admin); without this the reservation
+	//     coverage check compares the namespace name against booking users
+	//     and every booking-backed workload looks like an uncovered
+	//     stranger, double-counting capacity.
+	//  3. namespace name with a leading "user-" stripped (user-user1 → user1)
+	//  4. the namespace name itself
+	metadata := namespace.Metadata
+	if owner := metadata.Labels["rhai-tmm.dev/owner"]; owner != "" {
+		return owner, nil
 	}
-	return owner, nil
+	if requester := metadata.Annotations["openshift.io/requester"]; requester != "" {
+		return requester, nil
+	}
+	trimmed := strings.TrimPrefix(ns, "user-")
+	return trimmed, nil
 }
 
 func K8sGet(path string) ([]byte, error) {
@@ -658,6 +676,7 @@ func syncBookings(usages []resourceUsage, dates []string) error {
 				if len(uncoveredDates) == 0 {
 					for _, date := range coveredDates {
 						userReserved[date][normalUser]--
+						recordCoveredUsage(normalUser, u.Resource, date)
 					}
 					continue
 				}
@@ -694,9 +713,12 @@ func syncBookings(usages []resourceUsage, dates []string) error {
 					continue
 				}
 
-				// Decrement reservation credits on covered dates
+				// Decrement reservation credits on covered dates — the unit is
+				// consuming the reservation, recorded so the UI can render the
+				// reserved slot as actively consumed (green) while it runs.
 				for _, date := range coveredDates {
 					userReserved[date][normalUser]--
+					recordCoveredUsage(normalUser, u.Resource, date)
 				}
 
 				// Mark slot occupied on all dates, create bookings only on uncovered dates
@@ -891,4 +913,54 @@ func kueueBookingID(namespace, resource string, slotIndex int, date string) stri
 	}
 	short = strings.ReplaceAll(short, "-", "")
 	return fmt.Sprintf("kueue-%s-%s-s%d-%s", namespace, short, slotIndex, date)
+}
+
+// CoveredUsageEntry is one unit of booked capacity that an admitted workload
+// is actively consuming: the reservation stays in the bookings table, and
+// this overlay tells the UI to render it as consumed (green) while the
+// workload runs.
+type CoveredUsageEntry struct {
+	User     string `json:"user"`
+	Resource string `json:"resource"`
+	Date     string `json:"date"`
+	Count    int    `json:"count"`
+}
+
+type coveredKey struct {
+	user     string
+	resource string
+	date     string
+}
+
+var (
+	coveredUsageMu   sync.Mutex
+	lastCoveredUsage = map[coveredKey]int{}
+)
+
+// recordCoveredUsage is called by the sync for every unit whose consumption
+// is absorbed by an existing reservation.
+func recordCoveredUsage(user, resource, date string) {
+	coveredUsageMu.Lock()
+	defer coveredUsageMu.Unlock()
+	lastCoveredUsage[coveredKey{user: user, resource: resource, date: date}]++
+}
+
+// resetCoveredUsage clears the overlay at the start of each sync cycle — the
+// cycle rebuilds the full picture from live Kueue state.
+func resetCoveredUsage() {
+	coveredUsageMu.Lock()
+	defer coveredUsageMu.Unlock()
+	lastCoveredUsage = map[coveredKey]int{}
+}
+
+// CoveredUsageSnapshot returns the active consumption of booked capacity
+// from the most recent sync cycle.
+func CoveredUsageSnapshot() []CoveredUsageEntry {
+	coveredUsageMu.Lock()
+	defer coveredUsageMu.Unlock()
+	out := make([]CoveredUsageEntry, 0, len(lastCoveredUsage))
+	for k, count := range lastCoveredUsage {
+		out = append(out, CoveredUsageEntry{User: k.user, Resource: k.resource, Date: k.date, Count: count})
+	}
+	return out
 }

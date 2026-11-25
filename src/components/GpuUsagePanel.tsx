@@ -10,11 +10,15 @@ import {
   CONSUMED_COLOR,
   RESERVED_COLOR,
 } from '../utils/constants';
+import { CoveredUsage } from '../utils/api';
 
 interface GpuUsagePanelProps {
   bookings: Booking[];
   resources: GPUResource[];
   selectedDate?: string;
+  /** Booked capacity an admitted workload is actively consuming right now
+   *  (user+resource+date) — rendered as consumed (green) reserved slots. */
+  coveredUsage?: CoveredUsage[];
 }
 
 function localDateStr(): string {
@@ -27,7 +31,7 @@ function utcDateStr(): string {
   return `${n.getUTCFullYear()}-${String(n.getUTCMonth() + 1).padStart(2, '0')}-${String(n.getUTCDate()).padStart(2, '0')}`;
 }
 
-const GpuUsagePanel: React.FC<GpuUsagePanelProps> = ({ bookings, resources, selectedDate }) => {
+const GpuUsagePanel: React.FC<GpuUsagePanelProps> = ({ bookings, resources, selectedDate, coveredUsage = [] }) => {
   const today = selectedDate || localDateStr();
   const utcToday = utcDateStr();
   const localToday = localDateStr();
@@ -47,15 +51,29 @@ const GpuUsagePanel: React.FC<GpuUsagePanelProps> = ({ bookings, resources, sele
         if (b.source === 'consumed') consumedUnits.add(b.slotIndex);
         else reservedUnits.add(b.slotIndex);
       }
+
+      // Units of this lane whose reserved booking an admitted workload is
+      // actively consuming (user+resource+date matched): rendered as
+      // consumed rather than reserved, without creating booking rows.
+      let covered = 0;
+      for (const cu of coveredUsage) {
+        if (cu.resource !== r.type || !displayDates.includes(cu.date)) continue;
+        if (!dayBookings.some((b) => b.user === cu.user)) continue;
+        covered += cu.count;
+      }
+      covered = Math.min(covered, reservedUnits.size);
+      const reservedCount = reservedUnits.size - covered;
+      const consumedCount = consumedUnits.size + covered;
+
       return {
         resource: r,
-        reservedCount: reservedUnits.size,
-        consumedCount: consumedUnits.size,
+        reservedCount,
+        consumedCount,
         totalBooked: bookedUnits.size,
         totalSlots: r.count,
       };
     });
-  }, [bookings, resources, today, showAdjacentUtcDate]);
+  }, [bookings, resources, today, showAdjacentUtcDate, coveredUsage, displayDates]);
 
   const totalBooked = usageData.reduce((s, u) => s + u.totalBooked, 0);
   const totalSlots = usageData.reduce((s, u) => s + u.totalSlots, 0);

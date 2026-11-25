@@ -37,7 +37,7 @@ import PreemptionBanner from './PreemptionBanner';
 
 const BookingPage: React.FC = () => {
   useAuth();
-  const { bookings, activeReservations, currentUser, loading: bookingsLoading, fetchBookings } = useBookings();
+  const { bookings, activeReservations, coveredUsage, currentUser, loading: bookingsLoading, fetchBookings } = useBookings();
   const { gpuResources, bookingWindowDays } = useConfig();
   const { preemptedWorkloads } = usePreemptedWorkloads();
   const utcNow = useClock();
@@ -339,6 +339,7 @@ const BookingPage: React.FC = () => {
             bookings={bookings}
             resources={gpuResources}
             selectedDate={selectedDates[0] || todayStr()}
+            coveredUsage={coveredUsage}
           />
 
           <PreemptionBanner workloads={preemptedWorkloads} />

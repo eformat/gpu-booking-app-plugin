@@ -20,7 +20,10 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   });
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ error: resp.statusText }));
-    throw new Error(err.error || resp.statusText);
+    // Surface the human-readable detail (e.g. board_capacity_exceeded's
+    // flex-board slice math) alongside the machine error code.
+    const msg = err.detail ? `${err.error}: ${err.detail}` : err.error || resp.statusText;
+    throw new Error(msg);
   }
   return resp.json();
 }
@@ -45,10 +48,19 @@ export interface ConfigResponse {
 export const getConfig = () => request<ConfigResponse>('/config');
 
 // Bookings
+export interface CoveredUsage {
+  user: string;
+  resource: string;
+  date: string;
+  count: number;
+}
+
 export interface BookingsResponse {
   bookings: Booking[];
   activeReservations: Record<string, string>;
   currentUser: string;
+  /** Booked capacity an admitted workload is actively consuming right now. */
+  coveredUsage?: CoveredUsage[];
 }
 
 export const getBookings = () => request<BookingsResponse>('/bookings');

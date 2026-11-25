@@ -138,6 +138,10 @@ func GetBookings(w http.ResponseWriter, r *http.Request) {
 		"bookings":           bookings,
 		"activeReservations": activeRes,
 		"currentUser":        user.Username,
+		// Booked capacity an admitted workload is actively consuming right
+		// now (user+resource+date) — the UI renders those reserved slots as
+		// consumed (green) while the workload runs.
+		"coveredUsage": kube.CoveredUsageSnapshot(),
 	})
 }
 
