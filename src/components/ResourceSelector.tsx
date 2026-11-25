@@ -64,6 +64,16 @@ const ResourceSelector: React.FC<ResourceSelectorProps> = ({
                     </div>
                   );
                 })()}
+                {r.draMode && r.isolation === 'dedicated' && (
+                  <div style={{ fontSize: '11px', color: 'var(--pf-t--global--text--color--regular)', opacity: 0.6, marginTop: '6px' }}>
+                    Flex boards — bookable whole or as MIG partitions, not both
+                  </div>
+                )}
+                {r.draMode && r.isolation === 'mig' && (
+                  <div style={{ fontSize: '11px', color: 'var(--pf-t--global--text--color--regular)', opacity: 0.6, marginTop: '6px' }}>
+                    Board capacity shared across MIG profiles
+                  </div>
+                )}
               </CardBody>
             </Card>
           </GalleryItem>

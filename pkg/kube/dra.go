@@ -296,6 +296,7 @@ func parseDRASlices(body []byte, hasGPUQuotaName bool) []database.GPUResourceSpe
 	var order []string
 	skippedNonGPU := 0
 	skippedNoProfile := 0
+	skippedMenuFiltered := 0
 
 	// MIG partitions deferred for equivalence math: the board's full memory
 	// comes from either an explicit counter-set device (driver-published) or
@@ -351,6 +352,15 @@ func parseDRASlices(body []byte, hasGPUQuotaName bool) []database.GPUResourceSpe
 		}
 
 		for _, dev := range slice.Spec.Devices {
+			// Branch on the device type first. A full-GPU parent under
+			// dynamic MIG also carries ConsumesCounters (it consumes its
+			// board's entire CounterSet — that is what makes whole-vs-
+			// partitions mutually exclusive), so ConsumesCounters alone
+			// cannot identify a partition: the flex parents would be
+			// misrouted into the partition branch and dropped for having
+			// no profile, shrinking the whole lane to the dedicated pool.
+			devType := attrStringAny(dev, draTypeAttrKeys)
+
 			// Partitionable counter-set devices (the full physical GPU under
 			// dynamic MIG): recorded for partition memory math, not emitted
 			// as a bookable catalog entry — DRA counter exclusivity already
@@ -375,10 +385,21 @@ func parseDRASlices(body []byte, hasGPUQuotaName bool) []database.GPUResourceSpe
 			// The live partitions also advertise consumable-shares capacity,
 			// but shares-within-MIG is meaningless for the booking model
 			// (4-way sharing of a 4.75 GiB slice) — not multiplied.
-			if len(dev.ConsumesCounters) > 0 {
+			// A device without a type attribute but consuming counters is
+			// treated as a partition (pre-type-attribute driver slices).
+			if (devType == "mig" || devType == "") && len(dev.ConsumesCounters) > 0 {
 				profile := attrStringAny(dev, draProfileAttrKeys)
 				if profile == "" {
 					skippedNoProfile++
+					continue
+				}
+				// Decision (2026-11-25): the +me profile is dropped from the
+				// booking menu (niche media-engine slice; NVML also caps it
+				// at 1 instance per board while the abstract announcement
+				// enumerates all placements). The driver still announces the
+				// partitions — no lane, card, or claim targets them.
+				if profile == "1g.18gb+me" {
+					skippedMenuFiltered++
 					continue
 				}
 				product := attrStringAny(dev, draProductAttrKeys)
@@ -407,9 +428,10 @@ func parseDRASlices(body []byte, hasGPUQuotaName bool) []database.GPUResourceSpe
 			}
 
 			// Only plain GPU devices for the shares/dedicated path: skip
-			// other device types (MIG partitions published with a type
-			// attribute, VFIO, ...) and profile-attributed devices.
-			if t := attrStringAny(dev, draTypeAttrKeys); t != "" && t != "gpu" {
+			// other device types (static-MIG partitions, VFIO, ...) and
+			// profile-attributed devices. Flex parents (type=gpu, full-board
+			// ConsumesCounters) fall through here — that is the point.
+			if devType != "" && devType != "gpu" {
 				skippedNonGPU++
 				continue
 			}
@@ -449,6 +471,9 @@ func parseDRASlices(body []byte, hasGPUQuotaName bool) []database.GPUResourceSpe
 
 	if skippedNoProfile > 0 {
 		slog.Info("dra discovery: skipped devices without MIG profile identity", "devices", skippedNoProfile)
+	}
+	if skippedMenuFiltered > 0 {
+		slog.Info("dra discovery: skipped menu-filtered MIG profiles", "devices", skippedMenuFiltered)
 	}
 	if skippedNonGPU > 0 {
 		slog.Info("dra discovery: skipped non-GPU devices", "devices", skippedNonGPU)

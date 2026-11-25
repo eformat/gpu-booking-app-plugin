@@ -3,6 +3,7 @@ package kube
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/eformat/gpu-booking-plugin/pkg/database"
@@ -692,5 +693,129 @@ func TestParseDRASlices_LiveFixture(t *testing.T) {
 		if s.MaxSharesPerDevice != 0 {
 			t.Errorf("%s MaxSharesPerDevice = %d, want 0 (partition shares not multiplied)", name, s.MaxSharesPerDevice)
 		}
+	}
+}
+
+// draPartitionableSliceFixture mirrors the fork driver's KEP 4815 split-slice
+// announcement (k8s 1.35+, verified on the H200 test bed 2026-11-25): per-node
+// device slices; the flex node publishes full-GPU parents (type=gpu,
+// consuming their board's entire CounterSet — that is what makes whole-vs-
+// partitions mutually exclusive) alongside abstract MIG partitions (type=mig,
+// one per profile × placement).
+const draPartitionableSliceFixture = `{
+  "items": [
+    {
+      "spec": {
+        "driver": "gpu.nvidia.com",
+        "nodeName": "dedicated-1",
+        "pool": { "name": "dedicated-1", "generation": 3, "resourceSliceCount": 1 },
+        "devices": [
+          {
+            "name": "gpu-0",
+            "attributes": {
+              "productName": { "string": "NVIDIA H200" },
+              "type": { "string": "gpu" },
+              "uuid": { "string": "GPU-d0" }
+            },
+            "capacity": { "memory": { "value": "140Gi" } }
+          }
+        ]
+      }
+    },
+    {
+      "spec": {
+        "driver": "gpu.nvidia.com",
+        "nodeName": "flex-1",
+        "pool": { "name": "flex-1", "generation": 3, "resourceSliceCount": 1 },
+        "devices": [
+          {
+            "name": "gpu-0",
+            "attributes": {
+              "productName": { "string": "NVIDIA H200" },
+              "type": { "string": "gpu" },
+              "uuid": { "string": "GPU-f0" }
+            },
+            "capacity": { "memory": { "value": "140Gi" } },
+            "consumesCounters": [
+              {
+                "counterSet": "gpu-0-counter-set",
+                "counters": { "memory": { "value": "140Gi" } }
+              }
+            ]
+          },
+          {
+            "name": "gpu-0-mig-1g18gb-19-0",
+            "attributes": {
+              "productName": { "string": "NVIDIA H200" },
+              "type": { "string": "mig" },
+              "uuid": { "string": "GPU-f0-mig1" },
+              "profile": { "string": "1g.18gb" }
+            },
+            "capacity": { "memory": { "value": "16Gi" } },
+            "consumesCounters": [
+              {
+                "counterSet": "gpu-0-counter-set",
+                "counters": { "memory": { "value": "16Gi" } }
+              }
+            ]
+          },
+          {
+            "name": "gpu-0-mig-1g18gbme-20-0",
+            "attributes": {
+              "productName": { "string": "NVIDIA H200" },
+              "type": { "string": "mig" },
+              "uuid": { "string": "GPU-f0-migme" },
+              "profile": { "string": "1g.18gb+me" }
+            },
+            "capacity": { "memory": { "value": "16Gi" } },
+            "consumesCounters": [
+              {
+                "counterSet": "gpu-0-counter-set",
+                "counters": { "memory": { "value": "16Gi" } }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}`
+
+// The flex parent is a whole-GPU device that consumes its board's full
+// CounterSet — it must land in the dedicated whole lane (not be dropped as a
+// profile-less partition), and the +me partition must be menu-filtered
+// (decision 2026-11-25). Whole lane = dedicated + flex parents.
+func TestParseDRASlices_FlexWholeParentsAndMenuFilter(t *testing.T) {
+	specs := parseDRASlices([]byte(draPartitionableSliceFixture), true)
+
+	var whole *database.GPUResourceSpec
+	mig := map[string]int{}
+	for i := range specs {
+		s := &specs[i]
+		if strings.Contains(s.Name, "+me") {
+			t.Errorf("+me lane must be menu-filtered, got %q", s.Name)
+		}
+		switch s.Isolation {
+		case database.IsolationDedicated:
+			if whole != nil {
+				t.Fatalf("multiple whole lanes: %q and %q", whole.Name, s.Name)
+			}
+			whole = s
+		case database.IsolationMIG:
+			mig[s.Name] = s.Count
+		}
+	}
+
+	if whole == nil {
+		t.Fatal("no whole lane: the flex parent was misclassified")
+	}
+	if whole.Count != 2 {
+		t.Errorf("whole lane count = %d, want 2 (1 dedicated + 1 flex parent)", whole.Count)
+	}
+	if got, ok := mig["NVIDIA H200 MIG 1g.18gb"]; !ok || got != 1 {
+		t.Errorf("1g.18gb lane count = %d (present %v), want 1", got, ok)
+	}
+	if len(mig) != 1 {
+		t.Errorf("expected exactly 1 MIG lane (+me filtered), got %d: %v", len(mig), mig)
 	}
 }
