@@ -202,6 +202,15 @@ func CreateBooking(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Cross-lane board feasibility (Dynamic MIG Booking): per-lane quotas are
+	// independent — 16 whole + 4x 7g.141gb passes every lane but needs 20
+	// boards on 16. Simulate the date's bookings plus this one against the
+	// physical board model (8 dedicated + 8 flex x 8 slices).
+	if msg := database.CheckDateCapacity(req.Date, map[string]int{req.Resource: 1}); msg != "" {
+		JsonResponseStatus(w, http.StatusConflict, map[string]string{"error": "board_capacity_exceeded", "detail": msg})
+		return
+	}
+
 	// Check for conflicts
 	rows, err := db.QueryContext(ctx,
 		"SELECT id, source FROM bookings WHERE resource = ? AND slot_index = ? AND date = ?",
@@ -505,6 +514,16 @@ func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 	var dates []string
 	for d := start; !d.After(end); d = d.AddDate(0, 0, 1) {
 		dates = append(dates, d.Format("2006-01-02"))
+	}
+
+	// Cross-lane board feasibility per date (Dynamic MIG Booking): the same
+	// resource mix repeats on every date in the range, so each date is
+	// checked with the full requested delta against the physical board model.
+	for _, date := range dates {
+		if msg := database.CheckDateCapacity(date, req.Resources); msg != "" {
+			JsonResponseStatus(w, http.StatusConflict, map[string]string{"error": "board_capacity_exceeded", "date": date, "detail": msg})
+			return
+		}
 	}
 
 	cfg := database.GetConfig(BookingWindowDays)
