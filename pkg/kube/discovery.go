@@ -78,6 +78,9 @@ func applyDiscoveryResult(result *DiscoveryResult) {
 		TotalMemory: result.TotalMemory,
 		FlavorName:  result.FlavorName,
 	})
+	// Phase C1: mirror every MIG lane with its per-profile DeviceClass so
+	// claims can charge the per-lane quota (see kueue-cr.yaml mappings).
+	ApplyDeviceClasses(result.Resources)
 }
 
 func discoveryLoop() {

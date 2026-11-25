@@ -544,6 +544,7 @@ func parseDRASlices(body []byte, hasGPUQuotaName bool) []database.GPUResourceSpe
 			spec.Count = g.devices
 			spec.GPUEquivalent = g.gpuEquiv
 			spec.DeviceMemoryGB = g.memoryGB
+			spec.Profile = g.profile
 		case g.shared:
 			spec.Name = product + " Shares"
 			spec.Isolation = database.IsolationShared

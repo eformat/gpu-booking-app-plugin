@@ -43,6 +43,12 @@ type GPUResourceSpec struct {
 	Isolation          string `json:"isolation,omitempty"`          // "dedicated" | "shared" | "mig"
 	MaxSharesPerDevice int    `json:"maxSharesPerDevice,omitempty"` // consumable shares per physical device
 	DeviceMemoryGB     int    `json:"deviceMemoryGb,omitempty"`     // full-device memory in GB
+
+	// Profile is the DRA MIG profile attribute value (dotted, e.g.
+	// "7g.141gb") for MIG-isolation lanes; empty for whole-device and
+	// shared lanes. It keys the per-profile DeviceClass the sync
+	// provisions so claims can charge the per-lane quota (phase C1).
+	Profile string `json:"profile,omitempty"`
 }
 
 // DRA isolation modes for GPUResourceSpec.Isolation.
