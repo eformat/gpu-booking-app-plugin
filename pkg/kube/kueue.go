@@ -642,7 +642,7 @@ func syncBookings(usages []resourceUsage, dates []string) error {
 					if rows.Scan(&idx, &u) == nil {
 						reserved[idx] = true
 						slotUser[idx] = normalizeUser(u)
-						perUser[normalizeUser(u)]++
+						perUser[coverageUser(u)]++
 					}
 				}
 				rows.Close()
@@ -660,7 +660,7 @@ func syncBookings(usages []resourceUsage, dates []string) error {
 
 		for _, u := range group.usages {
 			for i := 0; i < u.Count; i++ {
-				normalUser := normalizeUser(u.User)
+				normalUser := coverageUser(u.User)
 
 				// Determine which dates are covered vs uncovered by reservations.
 				var coveredDates, uncoveredDates []string
@@ -901,6 +901,17 @@ func normalizeUser(u string) string {
 		return u[:i]
 	}
 	return u
+}
+
+// coverageUser is the identity the coverage matcher keys on. System bookings
+// store the target namespace (e.g. user-user1) while admitted-workload usage
+// is attributed to the namespace's resolved requester (e.g. user1 — see
+// getNamespaceRequester's user- strip), so reservation credits keyed on the
+// raw string never matched the usage and every date looked uncovered. Trim
+// the same prefix on both sides: personal bookings already store the
+// requester, which is a fixed point of the trim.
+func coverageUser(u string) string {
+	return strings.TrimPrefix(normalizeUser(u), "user-")
 }
 
 func kueueBookingID(namespace, resource string, slotIndex int, date string) string {

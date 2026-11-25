@@ -31,6 +31,14 @@ function utcDateStr(): string {
   return `${n.getUTCFullYear()}-${String(n.getUTCMonth() + 1).padStart(2, '0')}-${String(n.getUTCDate()).padStart(2, '0')}`;
 }
 
+/** System bookings store the target namespace (e.g. user-user1) while
+ *  covered-usage entries carry the namespace's resolved requester (user1);
+ *  match on the stripped form so a namespace's reservation pairs with its
+ *  workloads. Mirrors the backend's coverageUser trim. */
+function coverageUser(u: string): string {
+  return u.replace(/^user-/, '');
+}
+
 const GpuUsagePanel: React.FC<GpuUsagePanelProps> = ({ bookings, resources, selectedDate, coveredUsage = [] }) => {
   const today = selectedDate || localDateStr();
   const utcToday = utcDateStr();
@@ -58,7 +66,7 @@ const GpuUsagePanel: React.FC<GpuUsagePanelProps> = ({ bookings, resources, sele
       let covered = 0;
       for (const cu of coveredUsage) {
         if (cu.resource !== r.type || !displayDates.includes(cu.date)) continue;
-        if (!dayBookings.some((b) => b.user === cu.user)) continue;
+        if (!dayBookings.some((b) => coverageUser(b.user) === coverageUser(cu.user))) continue;
         covered += cu.count;
       }
       covered = Math.min(covered, reservedUnits.size);

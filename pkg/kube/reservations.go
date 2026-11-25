@@ -561,6 +561,32 @@ func applyCohortRemaining(reservations []userReservation) error {
 	return k8sApply("/apis/kueue.x-k8s.io/v1beta1/cohorts/unreserved", cohort)
 }
 
+// hasBookingsForUnknownResource reports whether the user holds reserved
+// bookings on a resource type the current GPU config no longer lists — the
+// signature of a discovery-drift window (transient empty/renamed MIG surface)
+// rather than an expired reservation. Fails open (false) on a DB error so the
+// drain path keeps its pre-guard behavior when the database is unreachable.
+func hasBookingsForUnknownResource(user string) bool {
+	rows, err := database.DB().Query(
+		"SELECT DISTINCT resource FROM bookings WHERE user = ? AND source = ?",
+		user, database.SourceReserved,
+	)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var res string
+		if err := rows.Scan(&res); err != nil {
+			continue
+		}
+		if _, ok := database.GPUSpecByType(res); !ok {
+			return true
+		}
+	}
+	return false
+}
+
 func removeStaleReservations(activeUsers map[string]bool) error {
 	items, err := k8sListWithLabel(
 		"/apis/kueue.x-k8s.io/v1beta1/clusterqueues",
