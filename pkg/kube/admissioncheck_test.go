@@ -50,7 +50,7 @@ func TestAssignBookerStates(t *testing.T) {
 		mk("wl-new", time.Hour, map[string]int{"h200-mig-7g-141gb": 1}), // booking exhausted
 		mk("wl-unmapped", time.Hour, nil),                               // no claims: nothing to book
 	}
-	states := assignBookerStates(workloads, credits, bookerCapacity{}, requesterOf)
+	states, _ := assignBookerStates(workloads, credits, bookerCapacity{}, requesterOf)
 
 	if got := states["wl-old"].State; got != "Ready" {
 		t.Errorf("wl-old state = %q, want Ready", got)
@@ -70,7 +70,7 @@ func TestAssignBookerStates(t *testing.T) {
 
 	// FIFO: with two units booked, both fit and the older one is charged first.
 	credits["user1"]["h200-mig-7g-141gb"] = 2
-	states = assignBookerStates(workloads[:2], credits, bookerCapacity{}, requesterOf)
+	states, _ = assignBookerStates(workloads[:2], credits, bookerCapacity{}, requesterOf)
 	if states["wl-old"].State != "Ready" || states["wl-new"].State != "Ready" {
 		t.Errorf("FIFO: both should be Ready under a 2-unit booking, got %v / %v",
 			states["wl-old"].State, states["wl-new"].State)
@@ -116,7 +116,7 @@ func TestAssignBookerStatesSystemBookingCoversNamespaceUsers(t *testing.T) {	bas
 	credits := map[string]map[string]int{
 		"user1": {"h200-gpu": 4},
 	}
-	states := assignBookerStates([]bookerWorkload{w}, credits, bookerCapacity{}, func(ns string) string { return "user1" })
+	states, _ := assignBookerStates([]bookerWorkload{w}, credits, bookerCapacity{}, func(ns string) string { return "user1" })
 	if states["wl"].State != "Ready" {
 		t.Errorf("system booking should cover the namespace's workloads, got %v (%s)",
 			states["wl"].State, states["wl"].Message)
@@ -152,7 +152,7 @@ func TestAssignBookerStatesUnreservedBudget(t *testing.T) {
 		mkUn(base, "wl-2", time.Minute, map[string]int{"h200-gpu": 8}),
 		mkUn(base, "wl-3", 2*time.Minute, map[string]int{"h200-gpu": 4}),
 	}
-	states := assignBookerStates(workloads, map[string]map[string]int{}, capacity, requesterOf)
+	states, _ := assignBookerStates(workloads, map[string]map[string]int{}, capacity, requesterOf)
 	if states["wl-1"].State != "Ready" || states["wl-2"].State != "Ready" {
 		t.Errorf("first two should fit free capacity, got %v / %v", states["wl-1"].State, states["wl-2"].State)
 	}
@@ -169,7 +169,7 @@ func TestAssignBookerStatesUnreservedBudget(t *testing.T) {
 		mkUn(base, "wl-big", 0, map[string]int{"h200-gpu": 15}),
 		mkUn(base, "wl-small", time.Minute, map[string]int{"h200-gpu": 2}),
 	}
-	states = assignBookerStates(big, map[string]map[string]int{}, capacity, requesterOf)
+	states, _ = assignBookerStates(big, map[string]map[string]int{}, capacity, requesterOf)
 	if states["wl-big"].State != "Pending" || states["wl-small"].State != "Ready" {
 		t.Errorf("backfill: big should gate (%v), small should run (%v)", states["wl-big"].State, states["wl-small"].State)
 	}
@@ -183,7 +183,7 @@ func TestAssignBookerStatesUnreservedShapeCap(t *testing.T) {
 	// charge can never schedule and must gate with the replicas hint,
 	// regardless of free cluster capacity.
 	w := mkUn(base, "wl-15", 0, map[string]int{"h200-gpu": 15})
-	states := assignBookerStates([]bookerWorkload{w}, map[string]map[string]int{}, testCapacity(), requesterOf)
+	states, _ := assignBookerStates([]bookerWorkload{w}, map[string]map[string]int{}, testCapacity(), requesterOf)
 	if states["wl-15"].State != "Pending" {
 		t.Fatalf("15-per-pod must gate, got %v (%s)", states["wl-15"].State, states["wl-15"].Message)
 	}
@@ -202,7 +202,7 @@ func TestAssignBookerStatesUnreservedShapeCap(t *testing.T) {
 		mkUn(base, "wl-old", 0, map[string]int{"h200-gpu": 4}),
 		mkUn(base, "wl-young", time.Minute, map[string]int{"h200-gpu": 4}),
 	}
-	states = assignBookerStates(workloads, map[string]map[string]int{}, capacity, requesterOf)
+	states, _ = assignBookerStates(workloads, map[string]map[string]int{}, capacity, requesterOf)
 	if states["wl-old"].State != "Ready" {
 		t.Errorf("oldest holder should keep its allocation under FIFO, got %v (%s)", states["wl-old"].State, states["wl-old"].Message)
 	}
@@ -215,7 +215,7 @@ func TestAssignBookerStatesUnreservedShapeCap(t *testing.T) {
 	credits := map[string]map[string]int{"user1": {"h200-gpu": 2}}
 	holder := mkUn(base, "wl-holder", 0, map[string]int{"h200-gpu": 2})
 	unbooked := mkUn(base, "wl-unbooked", time.Minute, map[string]int{"h200-gpu": 14})
-	states = assignBookerStates([]bookerWorkload{holder, unbooked}, credits, capacity, requesterOf)
+	states, _ = assignBookerStates([]bookerWorkload{holder, unbooked}, credits, capacity, requesterOf)
 	if states["wl-holder"].State != "Ready" || !strings.Contains(states["wl-holder"].Message, "covered by an active booking") {
 		t.Errorf("booking holder should run via coverage on any lane, got %v (%s)", states["wl-holder"].State, states["wl-holder"].Message)
 	}
@@ -268,7 +268,7 @@ func TestAssignBookerStatesBoardModel(t *testing.T) {
 		mkUn(base, "wl-8a", 0, map[string]int{"h200-gpu": 8}),
 		mkUn(base, "wl-8b", time.Minute, map[string]int{"h200-gpu": 8}),
 	}
-	states := assignBookerStates(workloads, map[string]map[string]int{}, capacity, requesterOf)
+	states, _ := assignBookerStates(workloads, map[string]map[string]int{}, capacity, requesterOf)
 	if states["wl-8a"].State != "Ready" {
 		t.Errorf("first 8-board pod should run beside the carve, got %v (%s)", states["wl-8a"].State, states["wl-8a"].Message)
 	}
@@ -285,10 +285,93 @@ func TestAssignBookerStatesBoardModel(t *testing.T) {
 		mkUn(base, "wl-8a", 0, map[string]int{"h200-gpu": 8}),
 		mkUn(base, "wl-7b", time.Minute, map[string]int{"h200-gpu": 7}),
 	}
-	states = assignBookerStates(smaller, map[string]map[string]int{}, capacity, requesterOf)
+	states, _ = assignBookerStates(smaller, map[string]map[string]int{}, capacity, requesterOf)
 	if states["wl-8a"].State != "Ready" || states["wl-7b"].State != "Ready" {
 		t.Errorf("8 + 7 + carve = exactly 16 boards, both should run, got %v / %v (%s)",
 			states["wl-8a"].State, states["wl-7b"].State, states["wl-7b"].Message)
+	}
+}
+
+// TestReactivationTargets covers the deposed-workload recovery sweep — the
+// operand's DRA admission race deterministically deposes replacements that
+// would otherwise wait as Pending, so reactivation is what delivers the
+// "preempted pods restart once there is capacity" behavior.
+func TestReactivationTargets(t *testing.T) {
+	base := time.Date(2026, 11, 26, 0, 0, 0, 0, time.UTC)
+	requesterOf := func(ns string) string { return "user1" }
+	deposed := func(name string, age time.Duration, charges map[string]int) bookerWorkload {
+		return bookerWorkload{
+			Name: name, Namespace: "user-user1", QueueName: "unreserved",
+			CreatedAt: base.Add(age), Charges: charges, Active: false,
+		}
+	}
+
+	capacity := bookerCapacity{
+		Catalog: map[string]int{"h200-gpu": 16, "h200-mig-7g-141gb": 8},
+		NodeMax: map[string]int{"h200-gpu": 8},
+		Booked:  map[string]int{},
+	}
+
+	// Grants from the active pass: the older 8-board pod holds the budget.
+	grants := bookerGrants{Used: map[string]int{"h200-gpu": 8}, Remaining: map[string]map[string]int{}}
+
+	// No carve: the deposed 8-board workload fits now (8+8 = 16 boards).
+	workloads := []bookerWorkload{
+		deposed("wl-deposed", time.Minute, map[string]int{"h200-gpu": 8}),
+	}
+	targets := reactivationTargets(workloads, grants, capacity, requesterOf)
+	if len(targets) != 1 || targets[0].Name != "wl-deposed" {
+		t.Fatalf("deposed workload should be reactivated once it fits, got %v", targets)
+	}
+
+	// Carve live: 8 granted + 8 candidate + carve = 72 flex slices > 64 —
+	// stays benched (exactly the live state being fixed).
+	capacity.Booked["h200-mig-7g-141gb"] = 1
+	targets = reactivationTargets(workloads, grants, capacity, requesterOf)
+	if len(targets) != 0 {
+		t.Fatalf("deposed workload must stay deposed while the carve holds a board, got %v", targets)
+	}
+
+	// Two deposed 8-board candidates, only 8 free: FIFO — the older is
+	// reactivated, the younger stays benched (its consumption is simulated).
+	capacity.Booked = map[string]int{}
+	two := []bookerWorkload{
+		deposed("wl-old-deposed", time.Minute, map[string]int{"h200-gpu": 8}),
+		deposed("wl-young-deposed", 2*time.Minute, map[string]int{"h200-gpu": 8}),
+	}
+	// fix ordering: wl-old is OLDER (smaller age) — ages above are offsets
+	// from base, so invert to make the names match the order semantics.
+	two[0].CreatedAt = base.Add(2 * time.Minute)
+	two[1].CreatedAt = base.Add(3 * time.Minute)
+	targets = reactivationTargets(two, grants, capacity, requesterOf)
+	if len(targets) != 1 || targets[0].Name != "wl-old-deposed" {
+		t.Fatalf("FIFO reactivation: only the older candidate fits, got %v", targets)
+	}
+
+	// Active workloads are never targets; zero-charge deposed are skipped.
+	mixed := []bookerWorkload{
+		{Name: "wl-active", Namespace: "user-user1", QueueName: "unreserved",
+			CreatedAt: base, Charges: map[string]int{"h200-gpu": 8}, Active: true},
+		deposed("wl-empty", time.Minute, nil),
+	}
+	targets = reactivationTargets(mixed, bookerGrants{Used: map[string]int{}, Remaining: map[string]map[string]int{}}, capacity, requesterOf)
+	if len(targets) != 0 {
+		t.Fatalf("active and zero-charge workloads are never reactivation targets, got %v", targets)
+	}
+
+	// Reserved-lane deposed: reactivated only when booking credits cover it.
+	reservedDeposed := bookerWorkload{
+		Name: "wl-res-deposed", Namespace: "user-user1", QueueName: "reserved",
+		CreatedAt: base, Charges: map[string]int{"h200-mig-7g-141gb": 1}, Active: false,
+	}
+	noCredits := reactivationTargets([]bookerWorkload{reservedDeposed}, bookerGrants{Used: map[string]int{}, Remaining: map[string]map[string]int{}}, capacity, requesterOf)
+	if len(noCredits) != 0 {
+		t.Fatalf("reserved-lane deposed without credits stays deposed, got %v", noCredits)
+	}
+	withCredits := reactivationTargets([]bookerWorkload{reservedDeposed},
+		bookerGrants{Used: map[string]int{}, Remaining: map[string]map[string]int{"user1": {"h200-mig-7g-141gb": 1}}}, capacity, requesterOf)
+	if len(withCredits) != 1 {
+		t.Fatalf("reserved-lane deposed with credits should be reactivated, got %v", withCredits)
 	}
 }
 

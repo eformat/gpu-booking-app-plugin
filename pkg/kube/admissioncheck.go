@@ -38,6 +38,10 @@ import (
 // leaves Ready — that is the expiry eviction and the make-room preemption:
 // book a lane someone holds unbooked and their workload is evicted on the
 // next pass; its Deployment's replacement gates instead of churning.
+//
+// Deactivated (deposed) workloads are not dead ends: each pass the enforcer
+// re-evaluates them and reactivates those that would now be granted — the
+// parked gated pod runs as soon as the check goes Ready.
 
 const (
 	BookerCheckName      = "booker"
@@ -427,6 +431,15 @@ func perNodeLaneCounts(body []byte, specs []database.GPUResourceSpec) map[string
 	return out
 }
 
+// bookerGrants carries the pass's consumption state so the reactivation
+// sweep can simulate a deposed candidate against what is actually granted.
+type bookerGrants struct {
+	// Used: lane → units granted to unreserved workloads this pass.
+	Used map[string]int
+	// Remaining: user → lane → unspent booking credits after the FIFO pass.
+	Remaining map[string]map[string]int
+}
+
 // assignBookerStates orders workloads FIFO (oldest first, across both
 // lanes) and assigns the booker check state:
 //
@@ -440,9 +453,9 @@ func perNodeLaneCounts(body []byte, specs []database.GPUResourceSpec) map[string
 //     can never schedule — DRA is node-local). Gated workloads consume no
 //     budget, so smaller later workloads backfill past them.
 //
-// Returns the desired state per workload (only workloads whose state
-// CHANGES are patched by the caller).
-func assignBookerStates(workloads []bookerWorkload, credits map[string]map[string]int, capacity bookerCapacity, requesterOf func(ns string) string) map[string]admissionCheckState {
+// Returns the desired state per workload plus the pass's grants (only
+// workloads whose state CHANGES are patched by the caller).
+func assignBookerStates(workloads []bookerWorkload, credits map[string]map[string]int, capacity bookerCapacity, requesterOf func(ns string) string) (map[string]admissionCheckState, bookerGrants) {
 	ordered := make([]bookerWorkload, len(workloads))
 	copy(ordered, workloads)
 	sort.Slice(ordered, func(i, j int) bool {
@@ -540,7 +553,7 @@ func assignBookerStates(workloads []bookerWorkload, credits map[string]map[strin
 			LastTransitionTime: now,
 		}
 	}
-	return states
+	return states, bookerGrants{Used: used, Remaining: remaining}
 }
 
 // unreservedGate returns the gating message for an unreserved workload's
@@ -741,7 +754,7 @@ func reconcileBookerStates(requesterOf func(ns string) string) error {
 	}
 	capacity := buildBookerCapacity(database.GetGPUConfig(), reservations, sliceBody)
 
-	states := assignBookerStates(workloads, credits, capacity, requesterOf)
+	states, grants := assignBookerStates(workloads, credits, capacity, requesterOf)
 	byName := map[string]bookerWorkload{}
 	for _, w := range workloads {
 		byName[w.Name] = w
@@ -787,7 +800,84 @@ func reconcileBookerStates(requesterOf func(ns string) string) error {
 	if patched > 0 {
 		slog.Info("booker: reconciled check states", "patched", patched, "evaluated", len(states))
 	}
+	// Reactivation sweep: deposed workloads get one more look each pass —
+	// if they would be granted now, reactivate them (the parked gated pod
+	// runs as soon as the check goes Ready).
+	for _, w := range reactivationTargets(workloads, grants, capacity, requesterOf) {
+		if err := reactivateWorkload(w.Namespace, w.Name); err != nil {
+			slog.Error("booker: failed to reactivate deactivated workload",
+				"workload", w.Name, "namespace", w.Namespace, "error", err)
+			continue
+		}
+		slog.Info("booker: reactivated deactivated workload (capacity now available)",
+			"workload", w.Name, "namespace", w.Namespace)
+	}
 	return nil
+}
+
+// reactivationTargets returns the deactivated (deposed) workloads that
+// would be granted RIGHT NOW: booking coverage for the reserved lane, or
+// shape + board + budget fit for the unreserved lane — simulated in FIFO
+// order against the current pass's grants (each reactivation consumes the
+// capacity it needs, so two deposed candidates compete fairly). This makes
+// deposition "bench until it fits" rather than a dead end: the operand's
+// DRA admission race deterministically deposes replacements that would
+// otherwise wait as Pending, and the parked gated pod runs the moment the
+// workload is reactivated and its check goes Ready.
+func reactivationTargets(workloads []bookerWorkload, grants bookerGrants, capacity bookerCapacity, requesterOf func(ns string) string) []bookerWorkload {
+	ordered := make([]bookerWorkload, len(workloads))
+	copy(ordered, workloads)
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].CreatedAt.Equal(ordered[j].CreatedAt) {
+			return ordered[i].Name < ordered[j].Name
+		}
+		return ordered[i].CreatedAt.Before(ordered[j].CreatedAt)
+	})
+
+	used := map[string]int{}
+	for lane, units := range grants.Used {
+		used[lane] = units
+	}
+	remaining := map[string]map[string]int{}
+	for u, lanes := range grants.Remaining {
+		remaining[u] = map[string]int{}
+		for lane, units := range lanes {
+			remaining[u][lane] = units
+		}
+	}
+
+	var targets []bookerWorkload
+	for _, w := range ordered {
+		if w.Active || len(w.Charges) == 0 {
+			continue
+		}
+		user := coverageUser(requesterOf(w.Namespace))
+		fits := true
+		if w.QueueName == bookerReservedLQName {
+			for lane, charge := range w.Charges {
+				if remaining[user][lane] < charge {
+					fits = false
+					break
+				}
+			}
+			if fits {
+				for lane, charge := range w.Charges {
+					remaining[user][lane] -= charge
+				}
+			}
+		} else {
+			fits = unreservedGate(w.Charges, capacity, used) == ""
+			if fits {
+				for lane, charge := range w.Charges {
+					used[lane] += charge
+				}
+			}
+		}
+		if fits {
+			targets = append(targets, w)
+		}
+	}
+	return targets
 }
 
 // deactivateWorkload sets spec.active=false on a workload: Kueue evicts it
@@ -796,6 +886,19 @@ func reconcileBookerStates(requesterOf func(ns string) string) error {
 func deactivateWorkload(namespace, name string) error {
 	payload, err := json.Marshal(map[string]any{
 		"spec": map[string]any{"active": false},
+	})
+	if err != nil {
+		return err
+	}
+	return k8sMergePatch(bookerAPIBase+"/namespaces/"+namespace+"/workloads/"+name, payload)
+}
+
+// reactivateWorkload sets spec.active=true on a deactivated workload:
+// Kueue re-queues it and — because the parked gated pod still exists — the
+// existing pod runs as soon as the check goes Ready. No new pod, no race.
+func reactivateWorkload(namespace, name string) error {
+	payload, err := json.Marshal(map[string]any{
+		"spec": map[string]any{"active": true},
 	})
 	if err != nil {
 		return err

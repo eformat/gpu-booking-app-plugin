@@ -115,6 +115,7 @@ The same flip does all eviction work:
 | Booking expires / cancelled | holder's charges lose coverage → check flips `Ready`→`Pending` → Kueue evicts |
 | New booking shrinks the free budget | over-budget unreserved holders flip `Pending` → evicted; when contended, **oldest keep their allocation, youngest lose** |
 | Workload admitted before its CQ carried the check | no `Ready`→`Pending` transition exists for Kueue to fire on → the **deactivation discriminator** deposes it: first pass patches the gating message; if still admitted on the next pass, the workload is deactivated once (`spec.active=false` — quota + claim released, pods deleted). Its Deployment's replacement then hits the check like any fresh workload |
+| **Deposed workload, capacity returns** | deposed is "bench until it fits", not a dead end: each pass the **reactivation sweep** re-evaluates deposed workloads against the current grants (FIFO, board model included) and reactivates those that would be granted now (`spec.active=true`). The parked gated pod runs as soon as the check goes Ready — no new pod, no re-deploy. This matters because the operand's DRA admission race deterministically deposes replacements that would otherwise wait as Pending |
 
 The discriminator matches only this controller's own gate messages (`isBookerGateMessage` — known prefixes plus an em-dash signature) so Kueue's own messages never trigger a deactivation. Deactivated workloads are skipped entirely — they hold nothing, spend nothing, and never re-admit; the user redeploys (the gating message says so).
 
@@ -150,6 +151,8 @@ The Kueue sync (30s) reads ClusterQueue `flavorUsage` and records **consumed** b
 | Gotcha | Detail |
 |---|---|
 | **Cross-lane board holds** | a MIG carve consumes flex boards from the whole lane's physical pool; per-lane budgets alone admit whole workloads that can never allocate — the booker packs whole + MIG demand through the board model (`BoardCapacityCheck`) before granting |
+| **Deposed ≠ dead** | a deactivated workload's gated pod parks (the Deployment is satisfied — no churn) and the reactivation sweep revives it when it would fit; a permanently-infeasible shape parks forever — resize or delete the workload to change it |
+| **Preempted-panel visibility** | the UI panel lists *existing* workload objects with Evicted/Preempted conditions — a completed eviction deletes the workload with its pod, so the entry vanishes; the durable record is the booker log and the gated replacement's message |
 | **CQ `admissionChecks` vs strategy** | the plain list is silently dropped by this operand — always write `admissionChecksStrategy` (§3) |
 | **`cohort` vs `cohortName`** | served CQs expose `spec.cohortName`; readers must use it |
 | **RBAC `/status` subresources** | `admissionchecks/status` and `workloads/status` need their own rules; `resourceclaimtemplates` needs `get` even with list/create/patch |

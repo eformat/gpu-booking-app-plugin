@@ -11,7 +11,7 @@ An OpenShift Console Dynamic Plugin for booking and managing shared GPU resource
 - **GPU auto-discovery** - automatically detects GPU types, MIG partitions, and cluster capacity from Kubernetes node labels, allocatable resources, and DRA ResourceSlices
 - **Kueue integration** - automatically syncs LocalQueue GPU usage as "consumed" bookings; user reservations take priority and trigger workload preemption
 - **Reservation system** - creates per-user ClusterQueues with protected `nominalQuota`, ensuring reserved workloads cannot be preempted by unreserved ones
-- **Booking enforcement (DRA)** - a Kueue AdmissionCheck ("booker") gates workloads on both the reserved and unreserved lanes: charges must be covered by an active booking or fit the free lane capacity, with a per-pod cap at the per-node device maximum; uncovered workloads are gated pre-admission and evicted when coverage lapses
+- **Booking enforcement (DRA)** - a Kueue AdmissionCheck ("booker") gates workloads on both the reserved and unreserved lanes: charges must be covered by an active booking or fit the free lane capacity, packed through the physical board model (whole boards + flex MIG slices share pools), with a per-pod cap at the per-node device maximum; uncovered workloads are gated pre-admission, evicted when coverage lapses, and benched workloads reactivate automatically once they fit again
 - **DRA device classes** - per-profile MIG DeviceClasses are provisioned automatically from ResourceSlice discovery, so claims charge per-profile quota lanes
 - **Admin dashboard** - sortable/filterable bookings table, runtime reservation sync toggle, on-demand GPU discovery, database export/import
 - **Built-in help** - 8-page markdown documentation with sidebar navigation
@@ -219,8 +219,9 @@ When Kueue sync is enabled, the plugin:
 
 With the booker enforcer enabled (`BOOKER_ENFORCER_ENABLED=true`), reservations become **enforced, not advisory** — on both the reserved and unreserved lanes:
 
-- a workload's DRA lane charges must be covered by an active booking (either lane) or fit the free lane capacity (catalog − Σ bookings − Σ other unreserved charges), with a per-pod cap at the per-node device maximum
+- a workload's DRA lane charges must be covered by an active booking (either lane) or fit the free lane capacity — packed through the physical board model (whole boards and MIG slices share the dedicated + flex pools), with a per-pod cap at the per-node device maximum
 - uncovered workloads are gated **before admission** (the pod never starts, no quota is held) and evicted when a booking expires or a new booking needs their capacity
+- evicted-and-deposed workloads are **benched, not killed**: the enforcer reactivates them the moment they would be granted again — the parked pod runs without any restart
 - bookings never block each other: feasibility counts reserved bookings only, and the enforcer deposes unbooked holders to make room
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full quota flow, preemption model, and sync lifecycle, and [docs/DRA-KUEUE.md](docs/DRA-KUEUE.md) for the DRA + Kueue enforcement deep dive.

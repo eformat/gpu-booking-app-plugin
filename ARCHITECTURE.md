@@ -260,7 +260,7 @@ The preemption design ensures user reservations are pre-eminent over unreserved 
 - Unreserved CQs **cannot preempt** user workloads because they have no reclaim policy
 - Beyond their reservation, users compete fairly with no preemption rights
 
-**DRA caveat:** on DRA clusters this operand's preemption decisions are quota-only — it does not model device feasibility or free held claims at preemption time. The **booker enforcer** ([docs/DRA-KUEUE.md](docs/DRA-KUEUE.md) §4) supplies the missing enforcement: it gates uncovered workloads before admission, evicts on booking expiry, and deposes unbooked holders when a booking needs their capacity — on any operand, without waiting for upstream DRA-aware preemption.
+**DRA caveat:** on DRA clusters this operand's preemption decisions are quota-only — it does not model device feasibility or free held claims at preemption time. The **booker enforcer** ([docs/DRA-KUEUE.md](docs/DRA-KUEUE.md) §4) supplies the missing enforcement: it gates uncovered workloads before admission, evicts on booking expiry, deposes unbooked holders when a booking needs their capacity, and re-benches them back into service when it fits again — on any operand, without waiting for upstream DRA-aware preemption.
 
 ## Consumed vs Reserved Bookings
 
@@ -368,8 +368,9 @@ Reconciles the plugin-owned **`booker` AdmissionCheck** across both GPU lanes �
 - Ensures the AdmissionCheck object exists and is **Active** (for custom checks the Active condition is the controller's job; Kueue refuses to admit workloads referencing an inactive check)
 - Ensures the check is wired into the static `unreserved` ClusterQueue (strategy form, append-only — self-healing)
 - Lists workloads on the `reserved` and `unreserved` LocalQueues cluster-wide, resolves each workload's DRA lane charges from its ResourceClaimTemplates
-- Evaluates the unified FIFO policy (booking coverage → free-capacity budget → per-node shape cap — full policy in [docs/DRA-KUEUE.md](docs/DRA-KUEUE.md) §4) and patches each workload's check state: `Ready` (run) or `Pending` (gated, with an actionable message)
+- Evaluates the unified FIFO policy (booking coverage → per-node shape cap → physical board model → free-capacity budget — full policy in [docs/DRA-KUEUE.md](docs/DRA-KUEUE.md) §4) and patches each workload's check state: `Ready` (run) or `Pending` (gated, with an actionable message)
 - Deactivates stale admitted workloads that stay admitted after a gating message was patched (admitted before the check existed — Kueue has no transition to evict on), releasing quota and DRA claims; the Deployment's replacement then hits the check like any fresh workload
+- **Reactivates deposed workloads that would now be granted** (the reactivation sweep, FIFO against the current grants) — the parked gated pod runs as soon as the check goes Ready, so deposed is "bench until it fits"
 
 The state patch itself is the eviction trigger: Kueue holds gated pods and evicts admitted workloads when a check leaves `Ready` — booking expiry and make-room preemption are the same flip.
 
