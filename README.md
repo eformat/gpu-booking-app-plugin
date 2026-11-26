@@ -2,15 +2,17 @@
 
 [![Tests](https://github.com/rhai-code/gpu-booking-app-plugin/actions/workflows/test.yaml/badge.svg)](https://github.com/rhai-code/gpu-booking-app-plugin/actions/workflows/test.yaml)
 
-An OpenShift Console Dynamic Plugin for booking and managing shared GPU resources with [Kueue](https://kueue.sigs.k8s.io/) integration. Users reserve GPU time slots through an interactive calendar interface embedded directly in the OpenShift console, and the system automatically manages Kueue ClusterQueue quotas to enforce reservation priority via workload preemption.
+An OpenShift Console Dynamic Plugin for booking and managing shared GPU resources with [Kueue](https://kueue.sigs.k8s.io/) and [DRA](https://kubernetes.io/docs/concepts/scheduling-eviction/dynamic-resource-allocation/) (Dynamic Resource Allocation) integration. Users reserve GPU time slots through an interactive calendar interface embedded directly in the OpenShift console, and the system automatically manages Kueue ClusterQueue quotas — backed by an admission-check enforcer that makes bookings **non-advisory**: reserved workloads run, unbooked workloads stay gated, and a booking evicts unbooked holders in its way.
 
 ## Features
 
 - **OpenShift Console integration** - runs as a dynamic plugin inside the OpenShift web console (admin perspective)
 - **Interactive calendar** with day/multi-day/hour-range bookings, Ctrl+click multi-select, Shift+click ranges, and right-click context menu
-- **GPU auto-discovery** - automatically detects GPU types, MIG partitions, and cluster capacity from Kubernetes node labels and allocatable resources
+- **GPU auto-discovery** - automatically detects GPU types, MIG partitions, and cluster capacity from Kubernetes node labels, allocatable resources, and DRA ResourceSlices
 - **Kueue integration** - automatically syncs LocalQueue GPU usage as "consumed" bookings; user reservations take priority and trigger workload preemption
 - **Reservation system** - creates per-user ClusterQueues with protected `nominalQuota`, ensuring reserved workloads cannot be preempted by unreserved ones
+- **Booking enforcement (DRA)** - a Kueue AdmissionCheck ("booker") gates workloads on both the reserved and unreserved lanes: charges must be covered by an active booking or fit the free lane capacity, with a per-pod cap at the per-node device maximum; uncovered workloads are gated pre-admission and evicted when coverage lapses
+- **DRA device classes** - per-profile MIG DeviceClasses are provisioned automatically from ResourceSlice discovery, so claims charge per-profile quota lanes
 - **Admin dashboard** - sortable/filterable bookings table, runtime reservation sync toggle, on-demand GPU discovery, database export/import
 - **Built-in help** - 8-page markdown documentation with sidebar navigation
 - **OpenShift auth** - authentication via console `UserToken` proxy and Kubernetes TokenReview/SubjectAccessReview
@@ -39,23 +41,27 @@ An OpenShift Console Dynamic Plugin for booking and managing shared GPU resource
   │  ├── Auth (TokenReview + SubjectAccessReview)        │
   │  ├── Booking API (CRUD, bulk, conflict resolution)   │
   │  ├── Admin API (list, delete, export/import DB)      │
-  │  ├── GPU Discovery (5m - auto-detect from nodes)      │
+  │  ├── GPU Discovery (5m - nodes + DRA ResourceSlices) │
   │  ├── Kueue Sync (30s - consumed bookings)            │
-  │  ├── Reservation Sync (10m - K8s resources)          │
+  │  ├── Reservation Sync (K8s resources, event-driven)  │
+  │  ├── Booker Enforcer (30s - AdmissionCheck states)   │
   │  └── Static Assets (plugin dist/)                    │
   │                                                      │
   │  SQLite DB (/app/data/bookings.db)                   │
   └──────────────────────────────────────────────────────┘
            │
   ┌────────▼─────────────────────────────────────────────┐
-  │ Kueue API (ClusterQueues, LocalQueues, Cohorts)      │
+  │ Kueue API (ClusterQueues, LocalQueues, Cohorts,      │
+  │            Workloads, AdmissionChecks)               │
+  │ DRA API (ResourceSlices, DeviceClasses,              │
+  │          ResourceClaimTemplates)                     │
   │ HardwareProfiles (infrastructure.opendatahub.io)     │
   └──────────────────────────────────────────────────────┘
 ```
 
 The plugin runs as a single pod with one container. The Go backend serves both the plugin's static assets (loaded by the OpenShift console) and the REST API. Authentication is handled by the console's `UserToken` proxy, which forwards the logged-in user's Bearer token to the backend.
 
-For the full architecture details, see [ARCHITECTURE.md](ARCHITECTURE.md).
+For the full architecture details, see [ARCHITECTURE.md](ARCHITECTURE.md). For the DRA + Kueue enforcement model (device classes, quota paths, the booker AdmissionCheck policy, and sizing rules), see [docs/DRA-KUEUE.md](docs/DRA-KUEUE.md).
 
 ## Getting Started
 
@@ -137,8 +143,10 @@ The backend runs on `:9443` and the webpack dev server on `:9001` (proxying API 
 | `KUEUE_SYNC_ENABLED` | `true` | Enable LocalQueue watcher |
 | `KUEUE_SYNC_INTERVAL` | `30` | Kueue poll interval in seconds |
 | `KUEUE_BOOKING_DAYS` | `7` | Days to book ahead for consumed slots |
-| `GPU_DISCOVERY_ENABLED` | `true` | Auto-discover GPUs from cluster nodes |
+| `GPU_DISCOVERY_ENABLED` | `true` | Auto-discover GPUs from cluster nodes + DRA ResourceSlices |
 | `GPU_DISCOVERY_INTERVAL` | `300` | Discovery interval in seconds |
+| `BOOKER_ENFORCER_ENABLED` | `false` | Enable the booker AdmissionCheck enforcer (chart sets `true`) |
+| `BOOKER_ENFORCER_INTERVAL` | `30` | Booker reconciliation interval in seconds |
 
 ## Deployment
 
@@ -209,7 +217,13 @@ When Kueue sync is enabled, the plugin:
 4. HardwareProfiles are created in user namespaces for OpenDataHub/RHOAI workbench scheduling
 5. When reservations expire, ClusterQueues are gracefully drained (`stopPolicy: HoldAndDrain`) before deletion, giving active workloads time to complete
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full quota flow, preemption model, and sync lifecycle.
+With the booker enforcer enabled (`BOOKER_ENFORCER_ENABLED=true`), reservations become **enforced, not advisory** — on both the reserved and unreserved lanes:
+
+- a workload's DRA lane charges must be covered by an active booking (either lane) or fit the free lane capacity (catalog − Σ bookings − Σ other unreserved charges), with a per-pod cap at the per-node device maximum
+- uncovered workloads are gated **before admission** (the pod never starts, no quota is held) and evicted when a booking expires or a new booking needs their capacity
+- bookings never block each other: feasibility counts reserved bookings only, and the enforcer deposes unbooked holders to make room
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full quota flow, preemption model, and sync lifecycle, and [docs/DRA-KUEUE.md](docs/DRA-KUEUE.md) for the DRA + Kueue enforcement deep dive.
 
 ## API Endpoints
 
@@ -234,20 +248,27 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full quota flow, preemption model
 
 ```
 gpu-booking-app-plugin/
-├── cmd/plugin/             # Go entry point
+├── cmd/backend/             # Go entry point (console plugin backend)
 ├── pkg/
-│   ├── api/                # HTTP handlers (auth, bookings, admin, config)
-│   ├── database/           # SQLite schema and queries
-│   └── kube/               # Kueue sync + reservation management
+│   ├── api/                 # HTTP handlers (auth, bookings, admin, config)
+│   ├── database/            # SQLite schema and queries
+│   └── kube/                # Kueue + DRA integration
+│       ├── kueue.go         #   LocalQueue sync → consumed bookings, claims attribution
+│       ├── reservations.go  #   CQ/LQ/HardwareProfile/RCT provisioning, Cohort math
+│       ├── discovery.go     #   GPU discovery (nodes + ResourceSlices → catalog lanes)
+│       ├── dra.go           #   ResourceSlice parsing, per-node counts, shares
+│       ├── deviceclasses.go #   per-profile MIG DeviceClass provisioning (C1)
+│       └── admissioncheck.go#   the "booker" AdmissionCheck enforcer
 ├── src/
-│   ├── components/         # React components (BookingPage, AdminPage, HelpPage, etc.)
-│   ├── utils/              # AuthContext, API helpers
-│   └── docs/               # Help markdown files, images, topic registry
-├── chart/                  # Helm chart (deployment, ConsolePlugin, RBAC, PVC)
-├── console-extensions.json # Plugin routes and navigation
-├── webpack.config.ts       # Frontend build config
-├── Containerfile           # Multi-stage build (Node.js + Go + UBI minimal)
-└── ARCHITECTURE.md         # Detailed architecture documentation
+│   ├── components/          # React components (BookingPage, AdminPage, HelpPage, etc.)
+│   ├── utils/               # AuthContext, API helpers
+│   └── docs/                # Help markdown files, images, topic registry
+├── chart/                   # Helm chart (deployment, ConsolePlugin, RBAC, PVC)
+├── docs/                    # Deep-dive documentation (DRA-KUEUE.md)
+├── console-extensions.json  # Plugin routes and navigation
+├── webpack.config.ts        # Frontend build config
+├── Containerfile            # Multi-stage build (Node.js + Go + UBI minimal)
+└── ARCHITECTURE.md          # Detailed architecture documentation
 ```
 
 ## License

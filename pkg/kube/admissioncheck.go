@@ -544,9 +544,14 @@ func assignBookerStates(workloads []bookerWorkload, credits map[string]map[strin
 }
 
 // unreservedGate returns the gating message for an unreserved workload's
-// charges, or "" when the workload fits: every lane charge must be within
-// the per-node device maximum and within the free lane budget (catalog
-// capacity − active bookings − other unreserved charges granted this pass).
+// charges, or "" when the workload fits. Checks, in order:
+//
+//  1. per-node device maximum (DRA is node-local — a bigger single-pod
+//     claim can never schedule),
+//  2. the physical board model (whole boards and MIG slices share the
+//     dedicated + flex pools — 16 whole + one 7g carve needs a 17th board),
+//  3. the flat lane budget (catalog − bookings − other unreserved charges).
+//
 // Lanes absent from the capacity view fail open (unknown → not enforced).
 func unreservedGate(charges map[string]int, capacity bookerCapacity, used map[string]int) string {
 	lanes := make([]string, 0, len(charges))
@@ -559,6 +564,23 @@ func unreservedGate(charges map[string]int, capacity bookerCapacity, used map[st
 		if nodeMax := capacity.NodeMax[lane]; nodeMax > 0 && charge > nodeMax {
 			return fmt.Sprintf("charge %d %s per pod exceeds the per-node maximum of %d — deploy replicas of ≤%d instead", charge, lane, nodeMax, nodeMax)
 		}
+	}
+	// Board model: whole boards and MIG slices draw on the same dedicated +
+	// flex pools. A carve in a MIG lane consumes flex boards the whole lane
+	// still counts — the flat budget alone admits whole workloads that can
+	// never allocate (16 whole + a 7g carve needs 17 physical boards).
+	totals := map[string]int{}
+	for lane, units := range capacity.Booked {
+		totals[lane] += units
+	}
+	for lane, units := range used {
+		totals[lane] += units
+	}
+	for _, lane := range lanes {
+		totals[lane] += charges[lane]
+	}
+	if reason := database.BoardCapacityCheck(totals); reason != "" {
+		return fmt.Sprintf("board pool exhausted: %s — book it, wait, or reduce the request", reason)
 	}
 	for _, lane := range lanes {
 		charge := charges[lane]
@@ -627,7 +649,9 @@ func isBookerGateMessage(msg string) bool {
 	if !strings.Contains(msg, " — ") {
 		return false
 	}
-	return strings.HasPrefix(msg, "charge ") || strings.HasPrefix(msg, "lane ")
+	return strings.HasPrefix(msg, "charge ") ||
+		strings.HasPrefix(msg, "lane ") ||
+		strings.HasPrefix(msg, "board pool exhausted")
 }
 
 // ensureUnreservedCQCheck wires the booker check into the static unreserved

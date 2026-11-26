@@ -4,12 +4,14 @@ This document describes the architecture of the GPU Booking OpenShift Console Dy
 
 ## System Overview
 
-The GPU Booking Console Plugin is an OpenShift Console Dynamic Plugin that manages GPU resources with optional MIG (Multi-Instance GPU) partitioning. GPU types, counts, and cluster capacity are auto-discovered from Kubernetes node labels and allocatable resources. It runs as a single pod serving both a React frontend (loaded into the OpenShift console) and a Go API backend. The system combines user-facing reservations with automatic Kueue workload tracking to provide a unified view of GPU allocation.
+The GPU Booking Console Plugin is an OpenShift Console Dynamic Plugin that manages GPU resources with optional MIG (Multi-Instance GPU) partitioning, backed by Kubernetes [DRA](https://kubernetes.io/docs/concepts/scheduling-eviction/dynamic-resource-allocation/) (Dynamic Resource Allocation) on DRA-enabled clusters. GPU types, counts, and cluster capacity are auto-discovered from Kubernetes node labels, allocatable resources, and DRA ResourceSlices. It runs as a single pod serving both a React frontend (loaded into the OpenShift console) and a Go API backend. The system combines user-facing reservations with automatic Kueue workload tracking and an admission-check enforcer to provide a unified — and on DRA clusters, **enforced** — view of GPU allocation.
 
 **Key components:**
 - **Console Plugin** (React/PatternFly v6 frontend) - loaded into OpenShift console via `ConsolePlugin` CR
-- **Go Backend** (API server on port 9443) - booking API, Kueue sync, reservation management
-- **Kueue** - Kubernetes-native job queueing with quota management
+- **Go Backend** (API server on port 9443) - booking API, Kueue sync, reservation management, DRA discovery
+- **Kueue** - Kubernetes-native job queueing with quota management (ClusterQueues, Cohorts, Workloads, AdmissionChecks)
+- **DRA** - ResourceSlices/DeviceClasses/ResourceClaims for device inventory and allocation
+- **Booker Enforcer** - a Kueue AdmissionCheck reconciled by the backend that makes bookings non-advisory (see [docs/DRA-KUEUE.md](docs/DRA-KUEUE.md))
 - **SQLite** - persistent booking storage (WAL mode)
 - **OpenShift Console Proxy** - authentication via `UserToken` proxy type
 
@@ -99,7 +101,7 @@ The Go backend serves the plugin's static assets and REST API on port 9443 with 
 
 ```
 cmd/
-└── plugin/main.go          # Entry point, server setup, TLS config
+└── backend/main.go          # Entry point (console plugin backend), loop startup
 
 pkg/
 ├── api/
@@ -108,12 +110,17 @@ pkg/
 │   ├── bookings.go         # GET/POST/DELETE bookings, bulk booking
 │   ├── admin.go            # Admin list, delete, DB export/import
 │   ├── config.go           # GPU specs, booking window, cluster capacity
+│   ├── workloads.go        # Preempted workloads API handler
 │   └── helpers.go          # JSON response helpers
 ├── database/
 │   └── database.go         # SQLite schema, CRUD operations, WAL mode
 └── kube/
-    ├── kueue.go            # Kueue LocalQueue sync → consumed bookings
-    └── reservations.go     # K8s resource sync (CQ/LQ/HardwareProfile)
+    ├── kueue.go            # Kueue LocalQueue sync → consumed bookings, claim attribution
+    ├── reservations.go     # K8s resource sync (CQ/LQ/HardwareProfile/RCT), Cohort math
+    ├── discovery.go        # GPU discovery (nodes + DRA ResourceSlices → catalog lanes)
+    ├── dra.go              # ResourceSlice parsing, per-node device counts, consumable shares
+    ├── deviceclasses.go    # per-profile MIG DeviceClass provisioning + GC (C1)
+    └── admissioncheck.go   # the "booker" AdmissionCheck enforcer
 ```
 
 ### Authentication Flow
@@ -159,7 +166,11 @@ This ensures `user-mhepburn` namespaces and ClusterQueues match the existing con
 
 ## GPU Resource Pool
 
-GPU resources are auto-discovered from the cluster by querying Kubernetes nodes with the `nvidia.com/gpu.present=true` label. The discovery module (`pkg/kube/discovery.go`) extracts:
+GPU resources are auto-discovered by two complementary mechanisms.
+
+### Device-plugin discovery (nodes)
+
+The discovery module (`pkg/kube/discovery.go`) queries Kubernetes nodes with the `nvidia.com/gpu.present=true` label and extracts:
 
 - **GPU product and memory** from node labels (`nvidia.com/gpu.product`, `nvidia.com/gpu.memory`)
 - **GPU and MIG counts** from `status.allocatable` resources (`nvidia.com/gpu`, `nvidia.com/mig-*`)
@@ -167,6 +178,16 @@ GPU resources are auto-discovered from the cluster by querying Kubernetes nodes 
 - **Total CPU and memory** summed across all GPU nodes
 
 GPU equivalent weights for MIG slices are calculated automatically as `mig_memory / full_gpu_memory`. The `share` field (fraction of total CPU/memory per unit) is derived from `gpuEquivalent / total_equivalent_units`.
+
+### DRA discovery (ResourceSlices)
+
+On DRA-enabled clusters (`pkg/kube/dra.go`), discovery additionally lists `resource.k8s.io` **ResourceSlices** — the DRA driver's per-node device inventory — and classifies devices into catalog lanes (see [docs/DRA-KUEUE.md](docs/DRA-KUEUE.md) §2):
+
+- whole boards (`type=gpu`, including flex parents carrying full-board `consumesCounters`) → the dedicated lane
+- MIG partitions (`type=mig` + `profile` attribute) → per-profile lanes
+- counter-set definers and menu-filtered profiles → skipped
+
+From the same data the discovery sync provisions **per-profile DeviceClasses** (`mig.nvidia.com-<dashed-profile>`, `pkg/kube/deviceclasses.go`) with CEL selectors on driver/type/profile, managed via label and GC'd when a lane leaves the catalog. Workloads claiming a per-profile class charge that profile's own quota lane through the Kueue `deviceClassMappings`; the folded `gpu.nvidia.com` / `mig.nvidia.com` classes remain as the whole-lane fallback. Per-profile classes are what make per-profile Kueue quota mappings possible (one DeviceClass → one logical quota name).
 
 Discovery runs at startup (synchronously, before Kueue/reservation sync) and then periodically (default: every 5 minutes). The configuration is stored in a thread-safe `atomic.Pointer[GPUConfig]` so concurrent readers always see a consistent snapshot. Administrators can trigger immediate re-discovery via `POST /api/admin/discover`.
 
@@ -182,13 +203,15 @@ All Kueue resources share a single flat Cohort. User reservations carve out prot
 
 ### Resource Relationships
 
-When a user has an active reservation, three Kubernetes resources are created:
+When a user has an active reservation, up to four kinds of Kubernetes resources are created:
 
-1. **ClusterQueue** (`user-<username>`) - joins the `unreserved` cohort, scoped to the user's namespace. Holds the reserved `nominalQuota` for CPU, memory, and GPU resources. Labeled with `rhai-tmm.dev/until` for expiry tracking. On expiry, the ClusterQueue is gracefully drained via `stopPolicy: HoldAndDrain` before deletion (see Expiration Cleaner below).
+1. **ClusterQueue** (`user-<username>` or `system-<namespace>`) - joins the `unreserved` cohort, scoped to the namespace. Holds the reserved `nominalQuota` for CPU, memory, and GPU resources. With the booker enforcer enabled it references the `booker` AdmissionCheck — via `admissionChecksStrategy`, the **only form this operand persists** (a plain `spec.admissionChecks` list is silently dropped). Labeled with `rhai-tmm.dev/until` for expiry tracking. On expiry, the ClusterQueue is gracefully drained via `stopPolicy: HoldAndDrain` before deletion (see Expiration Cleaner below).
 
-2. **LocalQueue** (`reserved`) - lives in the `user-<username>` namespace and points to the user's ClusterQueue. This is the queue users submit workloads to.
+2. **LocalQueue** (`reserved`) - lives in the `user-<username>` namespace and points to the user's ClusterQueue. This is the queue users submit reserved workloads to.
 
 3. **HardwareProfile(s)** - one per GPU resource type reserved (e.g. `reserved-gpu`, `reserved-mig-35gb`). Lives in the user's namespace and references the `reserved` LocalQueue. Uses API group `infrastructure.opendatahub.io`. Provides the scheduling interface for OpenDataHub/RHOAI workbenches.
+
+4. **ResourceClaimTemplates** (DRA mode) - namespaced `reserved-<lane>-rct` templates referenced by the DRA HardwareProfiles, so admitted workloads get real DRA ResourceClaims.
 
 ### System Bookings
 
@@ -210,11 +233,14 @@ Total GPU Pool (values.yaml: totalResources)
     v
 Remaining = Cohort nominalQuota (shared pool)
     |
-    |- ClusterQueue: unreserved (nominalQuota: 0, borrows from Cohort)
+    |- ClusterQueue: unreserved (nominalQuota: 0, borrows from Cohort,
+    |                carries the booker AdmissionCheck on DRA clusters)
     |- ClusterQueue: unreserved-priority (nominalQuota: 0, borrows from Cohort)
     |- ClusterQueue: user-alice (nominalQuota: reserved amount)
     |- ClusterQueue: user-bob (nominalQuota: reserved amount)
 ```
+
+The booking plugin re-derives the Cohort's remaining quota from the catalog and active bookings on every sync (`applyCohortRemaining`) — a reservation shrinks the borrowable pool, which is what triggers Kueue's own `reclaimWithinCohort` preemption.
 
 ## Preemption Model
 
@@ -233,6 +259,8 @@ The preemption design ensures user reservations are pre-eminent over unreserved 
 - User CQs can **reclaim** from any workload borrowing from the Cohort (all unreserved workloads)
 - Unreserved CQs **cannot preempt** user workloads because they have no reclaim policy
 - Beyond their reservation, users compete fairly with no preemption rights
+
+**DRA caveat:** on DRA clusters this operand's preemption decisions are quota-only — it does not model device feasibility or free held claims at preemption time. The **booker enforcer** ([docs/DRA-KUEUE.md](docs/DRA-KUEUE.md) §4) supplies the missing enforcement: it gates uncovered workloads before admission, evicts on booking expiry, and deposes unbooked holders when a booking needs their capacity — on any operand, without waiting for upstream DRA-aware preemption.
 
 ## Consumed vs Reserved Bookings
 
@@ -262,7 +290,7 @@ Every booking has a `booking_type`: `user` (created by a logged-in user for them
 
 ## Sync Lifecycle
 
-Three independent sync loops run concurrently in the Go backend.
+Four independent loops run concurrently in the Go backend (plus event-driven reservation syncs).
 
 ![Sync Lifecycle](images/sync-lifecycle.png)
 
@@ -283,10 +311,10 @@ Polls all LocalQueues in the cluster and creates `consumed` bookings reflecting 
 - Reconciles: adds missing bookings, removes stale future bookings, skips slots already reserved
 - Historical bookings (past dates) are preserved
 
-### 2. Reservation Sync Loop (every 10min)
+### 2. Reservation Sync Loop (event-driven + 2m cleaner)
 
 **File:** `pkg/kube/reservations.go`
-**Controlled by:** Runtime toggle via `POST /api/admin/reservations`
+**Controlled by:** Runtime toggle via `POST /api/admin/reservations` (enabled by default)
 
 Materializes Kueue resources (ClusterQueue, LocalQueue, HardwareProfile) for today's reserved bookings:
 
@@ -297,7 +325,7 @@ Materializes Kueue resources (ClusterQueue, LocalQueue, HardwareProfile) for tod
 - Applies ClusterQueue, LocalQueue, and HardwareProfile(s) via server-side apply
 - Updates the `unreserved` Cohort's `nominalQuota` with remaining resources
 
-### 3. Expiration Cleaner (every 10min)
+### 3. Expiration Cleaner (every 2min)
 
 **File:** `pkg/kube/reservations.go`
 
@@ -330,6 +358,21 @@ In addition to the periodic loops, reservation sync is triggered asynchronously 
 - Bulk booking creation (`POST /api/bookings/bulk`)
 - Database import (`POST /api/admin/database/import`)
 
+### 4. Booker Enforcer Loop (every 30s)
+
+**File:** `pkg/kube/admissioncheck.go`
+**Controlled by:** `BOOKER_ENFORCER_ENABLED` (chart default `true`), `BOOKER_ENFORCER_INTERVAL`
+
+Reconciles the plugin-owned **`booker` AdmissionCheck** across both GPU lanes — this is what turns reservations from advisory into enforced:
+
+- Ensures the AdmissionCheck object exists and is **Active** (for custom checks the Active condition is the controller's job; Kueue refuses to admit workloads referencing an inactive check)
+- Ensures the check is wired into the static `unreserved` ClusterQueue (strategy form, append-only — self-healing)
+- Lists workloads on the `reserved` and `unreserved` LocalQueues cluster-wide, resolves each workload's DRA lane charges from its ResourceClaimTemplates
+- Evaluates the unified FIFO policy (booking coverage → free-capacity budget → per-node shape cap — full policy in [docs/DRA-KUEUE.md](docs/DRA-KUEUE.md) §4) and patches each workload's check state: `Ready` (run) or `Pending` (gated, with an actionable message)
+- Deactivates stale admitted workloads that stay admitted after a gating message was patched (admitted before the check existed — Kueue has no transition to evict on), releasing quota and DRA claims; the Deployment's replacement then hits the check like any fresh workload
+
+The state patch itself is the eviction trigger: Kueue holds gated pods and evicts admitted workloads when a check leaves `Ready` — booking expiry and make-room preemption are the same flip.
+
 ## Deployment Architecture
 
 The application deploys as a single Kubernetes pod with one container, managed by a Helm chart in `chart/`.
@@ -360,8 +403,8 @@ Stage 3: final (UBI9 ubi-minimal)
 | **Service** | ClusterIP on port 9443, `service.beta.openshift.io/serving-cert-secret-name` annotation |
 | **ConfigMap** | GPU resource configuration (`gpu-config.json`), mounted at `/app/config` |
 | **PVC** | 2Gi for SQLite database persistence |
-| **ServiceAccount** | With RBAC for Kueue, namespace, auth, and HardwareProfile APIs |
-| **ClusterRole** | `localqueues`, `clusterqueues`, `cohorts` (Kueue); `namespaces`, `tokenreviews`, `subjectaccessreviews` (K8s); `hardwareprofiles` (OpenDataHub) |
+| **ServiceAccount** | With RBAC for Kueue, DRA, namespace, auth, and HardwareProfile APIs |
+| **ClusterRole** | `localqueues`, `clusterqueues` (+`/status`), `cohorts`, `workloads` (+`/status`), `admissionchecks` (+`/status`) (Kueue); `resourceslices`, `resourceclaims`, `resourceclaimtemplates`, `deviceclasses` (DRA); `namespaces`, `tokenreviews`, `subjectaccessreviews` (K8s); `hardwareprofiles` (OpenDataHub) |
 | **Console Patch** | Enables plugin in the `Console` operator config |
 
 ### RBAC
@@ -372,12 +415,18 @@ The plugin's ServiceAccount requires:
 |-----------|-----------|-------|
 | `kueue.x-k8s.io` | `clusterqueues`, `clusterqueues/status` | get, list, create, patch, delete |
 | `kueue.x-k8s.io` | `localqueues` | list, create, patch, delete |
-| `kueue.x-k8s.io` | `workloads` | list |
+| `kueue.x-k8s.io` | `workloads`, `workloads/status` | list, get, patch, update |
+| `kueue.x-k8s.io` | `admissionchecks`, `admissionchecks/status` | get, list, create, patch, update |
 | `kueue.x-k8s.io` | `cohorts` | create, patch |
+| `resource.k8s.io` | `resourceslices`, `resourceclaims` | get, list |
+| `resource.k8s.io` | `resourceclaimtemplates` | get, list, create, patch, delete |
+| `resource.k8s.io` | `deviceclasses` | get, list, create, update, patch, delete |
 | `""` (core) | `namespaces` | get |
 | `authentication.k8s.io` | `tokenreviews` | create |
 | `authorization.k8s.io` | `subjectaccessreviews` | create |
 | `infrastructure.opendatahub.io` | `hardwareprofiles` | list, create, patch, delete |
+
+The `/status` subresources (`workloads/status`, `admissionchecks/status`, `clusterqueues/status`) need their own RBAC rules — patch on the main resource does not cover them.
 
 Admin access for users is controlled by a separate ClusterRole that grants the `admin` verb on `gpubooking.openshift.io/bookings`. This custom RBAC rule is checked via SubjectAccessReview and is not included in the standard OpenShift `admin` ClusterRole, so project owners do not automatically get booking admin access.
 
@@ -431,8 +480,13 @@ Test files:
 | `pkg/api/ratelimit_test.go` | Per-IP rate limiting and burst behavior |
 | `pkg/database/database_test.go` | Init, schema, CRUD, unique constraints, config loading |
 | `pkg/kube/reservations_test.go` | Active reservation grouping (user/system/UTC offsets), CQ naming, namespace derivation |
+| `pkg/kube/admissioncheck_test.go` | Booker policy: coverage FIFO, unreserved budget + backfill, per-node shape cap, make-room ordering, gate-message discrimination, RCT double-nesting regression |
+| `pkg/kube/dra_test.go` | ResourceSlice parsing, device classification, shares |
+| `pkg/kube/deviceclasses_test.go` | Per-profile DeviceClass naming + GC selection |
+| `pkg/kube/discovery_test.go` | Node + DRA discovery → catalog lanes |
+| `pkg/kube/kueue_attrib_test.go` | Consumed-usage claim→lane attribution guard |
 
-**Note:** `pkg/kube/` sync functions that require the Kueue API are not unit-tested; `getActiveReservationsAt`, CQ naming, and namespace derivation are tested against temporary SQLite databases.
+**Note:** `pkg/kube/` sync and enforcer functions that require the live Kueue/DRA API are not integration-tested; the pure logic (state assignment, capacity math, parsing, naming) is covered against fixtures and temporary SQLite databases.
 
 ### Frontend (TypeScript)
 
@@ -450,14 +504,19 @@ Test files:
 
 | File | Purpose |
 |------|---------|
-| `cmd/plugin/main.go` | Entry point, TLS setup, server startup |
+| `cmd/backend/main.go` | Entry point, TLS setup, loop startup (kueue sync, reservation sync, discovery, booker enforcer) |
 | `pkg/api/main.go` | HTTP router, static assets, middleware chain |
 | `pkg/api/auth.go` | TokenReview + SubjectAccessReview auth |
 | `pkg/api/bookings.go` | Booking CRUD, conflict resolution, bulk booking |
 | `pkg/database/database.go` | SQLite schema, queries, WAL mode |
 | `pkg/api/workloads.go` | Preempted workloads API handler |
-| `pkg/kube/kueue.go` | Kueue LocalQueue sync → consumed bookings, preempted workload queries |
-| `pkg/kube/reservations.go` | K8s resource sync (CQ/LQ/HardwareProfile), username sanitization |
+| `pkg/kube/kueue.go` | Kueue LocalQueue sync → consumed bookings, claim→lane attribution, preempted workload queries |
+| `pkg/kube/reservations.go` | K8s resource sync (CQ/LQ/HardwareProfile/RCT), Cohort remaining math, username sanitization |
+| `pkg/kube/discovery.go` | GPU discovery (nodes + ResourceSlices → catalog lanes) |
+| `pkg/kube/dra.go` | ResourceSlice parsing, per-node device counts, consumable shares |
+| `pkg/kube/deviceclasses.go` | Per-profile MIG DeviceClass provisioning + GC |
+| `pkg/kube/admissioncheck.go` | The "booker" AdmissionCheck enforcer (lane charges, coverage/budget/shape policy, check states) |
+| `docs/DRA-KUEUE.md` | DRA + Kueue enforcement deep dive |
 | `src/components/BookingPage.tsx` | Main booking UI |
 | `src/components/BookingGrid.tsx` | Per-resource slot grid |
 | `src/components/HelpPage.tsx` | Help documentation viewer |

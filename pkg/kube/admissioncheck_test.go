@@ -159,8 +159,9 @@ func TestAssignBookerStatesUnreservedBudget(t *testing.T) {
 	if states["wl-3"].State != "Pending" {
 		t.Errorf("wl-3 exceeds remaining free capacity, got %v (%s)", states["wl-3"].State, states["wl-3"].Message)
 	}
-	if !strings.Contains(states["wl-3"].Message, "at capacity") {
-		t.Errorf("wl-3 message should carry the capacity hint, got %q", states["wl-3"].Message)
+	// 14 + 4 = 18 whole boards > 16 physical — the board model refuses.
+	if !strings.Contains(states["wl-3"].Message, "board pool exhausted") {
+		t.Errorf("wl-3 message should carry the board-model refusal, got %q", states["wl-3"].Message)
 	}
 	// Backfill: a later SMALL workload fits in the units a gated big one
 	// did not consume.
@@ -228,6 +229,7 @@ func TestIsBookerGateMessage(t *testing.T) {
 		"no active booking covering h200-gpu (available 0, requested 4) — book it or deploy with reserved=false",
 		"charge 15 h200-gpu per pod exceeds the per-node maximum of 8 — deploy replicas of ≤8 instead",
 		"lane h200-gpu at capacity: free 2, requested 4 (capacity 16, active bookings hold 10, unreserved workloads hold 0) — book it, wait, or reduce the request",
+		"board pool exhausted: bookings need 72 flex-board slices (8 whole beyond the 8 dedicated boards x 8 slices + 8 MIG slices), capacity is 64 — book it, wait, or reduce the request",
 	}
 	for _, m := range ours {
 		if !isBookerGateMessage(m) {
@@ -245,6 +247,48 @@ func TestIsBookerGateMessage(t *testing.T) {
 		if isBookerGateMessage(m) {
 			t.Errorf("isBookerGateMessage(%q) = true, want false", m)
 		}
+	}
+}
+
+// TestAssignBookerStatesBoardModel is the regression for the live finding
+// (2026-11-26): two 8-board unreserved pods + a 7g-141gb carve were all
+// admitted — the flat per-lane budget (16 − 0 − 8 = 8) is blind to the
+// cross-lane board hold, and the second pod sat Pending with an
+// unallocatable claim (only 7 whole boards left on the flex node).
+func TestAssignBookerStatesBoardModel(t *testing.T) {
+	base := time.Date(2026, 11, 26, 0, 0, 0, 0, time.UTC)
+	requesterOf := func(ns string) string { return "user1" }
+
+	capacity := bookerCapacity{
+		Catalog: map[string]int{"h200-gpu": 16, "h200-mig-7g-141gb": 8},
+		NodeMax: map[string]int{"h200-gpu": 8},
+		Booked:  map[string]int{"h200-mig-7g-141gb": 1}, // the live carve holds a flex board
+	}
+	workloads := []bookerWorkload{
+		mkUn(base, "wl-8a", 0, map[string]int{"h200-gpu": 8}),
+		mkUn(base, "wl-8b", time.Minute, map[string]int{"h200-gpu": 8}),
+	}
+	states := assignBookerStates(workloads, map[string]map[string]int{}, capacity, requesterOf)
+	if states["wl-8a"].State != "Ready" {
+		t.Errorf("first 8-board pod should run beside the carve, got %v (%s)", states["wl-8a"].State, states["wl-8a"].Message)
+	}
+	if states["wl-8b"].State != "Pending" {
+		t.Errorf("second 8-board pod must be refused: 16 whole + a carve needs a 17th board, got %v (%s)",
+			states["wl-8b"].State, states["wl-8b"].Message)
+	}
+	if !strings.Contains(states["wl-8b"].Message, "board pool exhausted") {
+		t.Errorf("refusal should carry the board-model reason, got %q", states["wl-8b"].Message)
+	}
+
+	// 7 boards instead: 15 whole + the carve is exactly 16 physical boards.
+	smaller := []bookerWorkload{
+		mkUn(base, "wl-8a", 0, map[string]int{"h200-gpu": 8}),
+		mkUn(base, "wl-7b", time.Minute, map[string]int{"h200-gpu": 7}),
+	}
+	states = assignBookerStates(smaller, map[string]map[string]int{}, capacity, requesterOf)
+	if states["wl-8a"].State != "Ready" || states["wl-7b"].State != "Ready" {
+		t.Errorf("8 + 7 + carve = exactly 16 boards, both should run, got %v / %v (%s)",
+			states["wl-8a"].State, states["wl-7b"].State, states["wl-7b"].Message)
 	}
 }
 
