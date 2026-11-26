@@ -366,11 +366,19 @@ func applyUserReservation(res userReservation) error {
 		},
 	}
 	if BookerEnforcerEnabled {
-		// Phase-C enforcement: reserved-lane workloads must pass the booker
-		// AdmissionCheck (their charged lanes covered by active bookings) or
-		// Kueue holds/evicts them. Flipping the enforcer off rebuilds CQs
-		// without the check and restores advisory behavior.
-		cq["spec"].(map[string]any)["admissionChecks"] = []string{BookerCheckName}
+		// Phase-C enforcement: workloads in this CQ must pass the booker
+		// AdmissionCheck (charges covered by active bookings, or within the
+		// unreserved free capacity) or Kueue holds/evicts them. Flipping the
+		// enforcer off rebuilds CQs without the check and restores advisory
+		// behavior.
+		//
+		// NOTE: the strategy form is load-bearing — this operand silently
+		// drops the plain spec.admissionChecks list (the check then only
+		// survives via whatever wired it out-of-band, and a CQ rebuild loses
+		// enforcement entirely).
+		cq["spec"].(map[string]any)["admissionChecksStrategy"] = map[string]any{
+			"admissionChecks": []map[string]any{{"name": BookerCheckName}},
+		}
 	}
 	if err := k8sApply("/apis/kueue.x-k8s.io/v1beta1/clusterqueues/"+cqName, cq); err != nil {
 		return fmt.Errorf("applying ClusterQueue %s: %w", cqName, err)

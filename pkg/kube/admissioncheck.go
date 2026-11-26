@@ -15,27 +15,44 @@ import (
 )
 
 // The booker enforcer: a Kueue AdmissionCheck driven by the booking app that
-// makes reserved lanes non-advisory on any operand (no upgrade required).
+// makes lane capacity non-advisory on any operand (no upgrade required).
 //
-// Every workload queued into a reservation ClusterQueue carries the "booker"
-// check. This controller reconciles the check state per workload: the DRA
-// lane charges (from the claim template, via the C1 class→lane convention)
-// must be covered by the user's ACTIVE bookings for the current UTC window.
-// Covered → Ready (Kueue admits); uncovered → Pending with a message (Kueue
-// holds pending workloads gated and EVICTS admitted ones when a check leaves
-// Ready — that is the expiry eviction and the make-room preemption: book a
-// lane someone holds unbooked and their workload is evicted on the next
-// pass; its Deployment's replacement gates instead of churning).
+// Every workload queued into a booker-managed LocalQueue ("reserved" or
+// "unreserved") carries the "booker" check. This controller reconciles the
+// check state per workload, FIFO by creation time:
 //
-// Unreserved-lane workloads (queueName != reserved) are not touched: the DRA
-// scheduler's physical exclusivity remains the floor there.
+//   - Booking coverage (either lane): the DRA lane charges (from the claim
+//     template, via the C1 class→lane convention) must fit under the user's
+//     ACTIVE bookings for the current UTC window. Covered → Ready; the
+//     booking units are spent. Bookings are lane-agnostic budgets — a holder
+//     can deploy through the unreserved LQ and still run on their booking.
+//   - Reserved-lane, uncovered → Pending with a rebooking hint.
+//   - Unreserved-lane, uncovered → free-capacity policy: the charge must fit
+//     catalog capacity − Σ active bookings − Σ other unbooked charges, and a
+//     single pod's charge is also capped at the per-node device maximum
+//     (DRA allocates a pod's devices node-locally; a larger claim can never
+//     schedule). Backfill: a gated workload does not consume budget, so
+//     smaller later workloads can still run.
+//
+// Kueue holds pending workloads gated and EVICTS admitted ones when a check
+// leaves Ready — that is the expiry eviction and the make-room preemption:
+// book a lane someone holds unbooked and their workload is evicted on the
+// next pass; its Deployment's replacement gates instead of churning.
 
 const (
 	BookerCheckName      = "booker"
 	BookerControllerName = "booker.gpu-booking-plugin"
 
-	bookerAPIBase        = "/apis/kueue.x-k8s.io/v1beta1"
-	bookerReservedLQName = "reserved"
+	bookerAPIBase = "/apis/kueue.x-k8s.io/v1beta1"
+
+	bookerReservedLQName   = "reserved"
+	bookerUnreservedLQName = "unreserved"
+
+	// bookerUnreservedCQName is the static unreserved ClusterQueue the
+	// "unreserved" LocalQueues target (all-zero quotas, borrows the
+	// remaining capacity from the Cohort). The enforcer wires the check
+	// into it so unreserved workloads gate before admission too.
+	bookerUnreservedCQName = "unreserved"
 )
 
 // BookerEnforcerEnabled gates the enforcement end to end: the AdmissionCheck
@@ -115,8 +132,9 @@ type admissionCheckState struct {
 	LastTransitionTime string `json:"lastTransitionTime,omitempty"`
 }
 
-// listBookerWorkloads returns every workload queued into the reserved LQ,
-// cluster-wide, with its DRA lane charges resolved from the claim templates.
+// listBookerWorkloads returns every workload queued into a booker-managed
+// LocalQueue (reserved or unreserved), cluster-wide, with its DRA lane
+// charges resolved from the claim templates.
 func listBookerWorkloads(laneByClass map[string]string) ([]bookerWorkload, error) {
 	body, err := K8sGet(bookerAPIBase + "/workloads")
 	if err != nil {
@@ -162,7 +180,7 @@ func listBookerWorkloads(laneByClass map[string]string) ([]bookerWorkload, error
 	rctCache := map[string]map[string]int{} // "ns/name" -> lane -> units
 	var out []bookerWorkload
 	for _, item := range list.Items {
-		if item.Spec.QueueName != bookerReservedLQName {
+		if item.Spec.QueueName != bookerReservedLQName && item.Spec.QueueName != bookerUnreservedLQName {
 			continue
 		}
 		w := bookerWorkload{
@@ -277,6 +295,12 @@ func coverageCredits(now time.Time) (map[string]map[string]int, error) {
 	if err != nil {
 		return nil, err
 	}
+	return creditsFromReservations(reservations), nil
+}
+
+// creditsFromReservations folds reservations into per-user per-lane credit
+// maps (the coverage currency the state assignment spends, FIFO).
+func creditsFromReservations(reservations []userReservation) map[string]map[string]int {
 	credits := map[string]map[string]int{}
 	for _, r := range reservations {
 		user := coverageUser(r.User)
@@ -287,15 +311,138 @@ func coverageCredits(now time.Time) (map[string]map[string]int, error) {
 			credits[user][lane] += units
 		}
 	}
-	return credits, nil
+	return credits
 }
 
-// assignBookerStates orders each user's reserved-lane workloads FIFO (oldest
-// first) and marks them Ready while their active booking units cover the
-// cumulative charge; the excess gates with a rebooking hint. Returns the
-// desired state per workload (only workloads whose state CHANGES are patched
-// by the caller).
-func assignBookerStates(workloads []bookerWorkload, credits map[string]map[string]int, requesterOf func(ns string) string) map[string]admissionCheckState {
+// bookerCapacity carries the lane-level facts the unreserved free-capacity
+// policy needs. All maps are keyed by catalog lane type (e.g. "h200-gpu").
+type bookerCapacity struct {
+	// Catalog: lane → total units across the cluster (from the GPU config).
+	Catalog map[string]int
+	// NodeMax: lane → largest single-node device count. DRA allocates a
+	// pod's devices node-locally, so a charge above this can never schedule.
+	// 0 = unknown (lane absent from the published slices) — not enforced.
+	NodeMax map[string]int
+	// Booked: lane → units held by ALL active bookings (they are off-limits
+	// to unbooked workloads whether or not the holder is running).
+	Booked map[string]int
+}
+
+// buildBookerCapacity assembles the capacity view from the GPU config, the
+// active reservations, and the published ResourceSlices (per-node counts).
+func buildBookerCapacity(cfg *database.GPUConfig, reservations []userReservation, sliceBody []byte) bookerCapacity {
+	capacity := bookerCapacity{
+		Catalog: map[string]int{},
+		NodeMax: map[string]int{},
+		Booked:  map[string]int{},
+	}
+	for _, spec := range cfg.Resources {
+		if spec.DRAMode {
+			capacity.Catalog[spec.Type] = spec.Count
+		}
+	}
+	for _, r := range reservations {
+		for lane, units := range r.Resources {
+			capacity.Booked[lane] += units
+		}
+	}
+	for lane, perNode := range perNodeLaneCounts(sliceBody, cfg.Resources) {
+		nodeMax := 0
+		for _, count := range perNode {
+			if count > nodeMax {
+				nodeMax = count
+			}
+		}
+		capacity.NodeMax[lane] = nodeMax
+	}
+	return capacity
+}
+
+// perNodeLaneCounts parses a ResourceSlice list into per-node device counts
+// per catalog lane, mirroring the discovery classification: whole boards
+// (type=gpu, including flex parents carrying full-board ConsumesCounters)
+// count toward the dedicated lane; MIG partitions count toward their
+// profile's lane. Counter-set definers are not claimable units — skipped.
+func perNodeLaneCounts(body []byte, specs []database.GPUResourceSpec) map[string]map[string]int {
+	out := map[string]map[string]int{}
+	if len(body) == 0 {
+		return out
+	}
+	dedicatedLane := ""
+	profileLane := map[string]string{}
+	for _, spec := range specs {
+		if !spec.DRAMode {
+			continue
+		}
+		switch spec.Isolation {
+		case database.IsolationDedicated:
+			dedicatedLane = spec.Type
+		case database.IsolationMIG:
+			if spec.Profile != "" {
+				profileLane[spec.Profile] = spec.Type
+			}
+		}
+	}
+	if dedicatedLane == "" && len(profileLane) == 0 {
+		return out
+	}
+	var list draSliceList
+	if err := json.Unmarshal(body, &list); err != nil {
+		return out
+	}
+	for _, slice := range list.Items {
+		if slice.Spec.Driver != database.DRADeviceClass {
+			continue
+		}
+		node := slice.Spec.NodeName
+		if node == "" {
+			node = slice.Spec.Pool.Name
+		}
+		if node == "" {
+			continue
+		}
+		for _, dev := range slice.Spec.Devices {
+			// Counter-set definers (the full physical GPU under dynamic MIG)
+			// are not themselves claimable catalog units.
+			if len(dev.Counters) > 0 {
+				continue
+			}
+			devType := attrStringAny(dev, draTypeAttrKeys)
+			profile := attrStringAny(dev, draProfileAttrKeys)
+			lane := ""
+			if (devType == "mig" || devType == "") && len(dev.ConsumesCounters) > 0 {
+				lane = profileLane[profile]
+			} else if devType == "gpu" || (devType == "" && profile == "" && len(dev.ConsumesCounters) == 0) {
+				lane = dedicatedLane
+			}
+			if lane == "" {
+				continue
+			}
+			if out[lane] == nil {
+				out[lane] = map[string]int{}
+			}
+			out[lane][node]++
+		}
+	}
+	return out
+}
+
+// assignBookerStates orders workloads FIFO (oldest first, across both
+// lanes) and assigns the booker check state:
+//
+//  1. Booking coverage (either lane): charges that fit under the user's
+//     remaining booking credits are Ready and SPEND those credits — a
+//     booking is a lane-agnostic budget spent FIFO.
+//  2. Reserved-lane, uncovered → Pending with a rebooking hint.
+//  3. Unreserved-lane, uncovered → free-capacity policy: charge ≤ catalog
+//     capacity − Σ active bookings − Σ other unbooked charges granted this
+//     pass, and charge ≤ per-node device maximum (a bigger single-pod claim
+//     can never schedule — DRA is node-local). Gated workloads consume no
+//     budget, so smaller later workloads backfill past them.
+//
+// Returns the desired state per workload (only workloads whose state
+// CHANGES are patched by the caller).
+func assignBookerStates(workloads []bookerWorkload, credits map[string]map[string]int, capacity bookerCapacity, requesterOf func(ns string) string) map[string]admissionCheckState {
 	ordered := make([]bookerWorkload, len(workloads))
 	copy(ordered, workloads)
 	sort.Slice(ordered, func(i, j int) bool {
@@ -312,6 +459,8 @@ func assignBookerStates(workloads []bookerWorkload, credits map[string]map[strin
 			remaining[u][lane] = units
 		}
 	}
+	// used tracks the unreserved budget granted this pass (lane → units).
+	used := map[string]int{}
 
 	states := map[string]admissionCheckState{}
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -323,14 +472,22 @@ func assignBookerStates(workloads []bookerWorkload, credits map[string]map[strin
 			continue
 		}
 		// Workloads without DRA lane charges (no claims, or a class the
-		// mapping does not cover) are not the booker's business — Kueue's
-		// own DRA path gates unmapped classes, and a no-claim workload has
-		// nothing to book.
+		// mapping does not cover) pass immediately — Kueue gates every
+		// workload in a check-wired CQ, and a CPU-only workload has nothing
+		// to book. Unmapped claim classes are Kueue's own DRA path's business.
 		if len(w.Charges) == 0 {
+			states[w.Name] = admissionCheckState{
+				Name:               BookerCheckName,
+				State:              "Ready",
+				Message:            "no DRA lane charges — nothing to book",
+				LastTransitionTime: now,
+			}
 			continue
 		}
 		user := coverageUser(requesterOf(w.Namespace))
-		covered := len(w.Charges) > 0
+		// 1) Booking coverage — lane-agnostic, FIFO (oldest workloads spend
+		// the user's credits first).
+		covered := true
 		var shortLane string
 		var booked, needed int
 		for lane, charge := range w.Charges {
@@ -341,7 +498,20 @@ func assignBookerStates(workloads []bookerWorkload, credits map[string]map[strin
 				break
 			}
 		}
-		if !covered {
+		if covered {
+			for lane, charge := range w.Charges {
+				remaining[user][lane] -= charge
+			}
+			states[w.Name] = admissionCheckState{
+				Name:               BookerCheckName,
+				State:              "Ready",
+				Message:            "covered by an active booking",
+				LastTransitionTime: now,
+			}
+			continue
+		}
+		// 2) Uncovered: the reserved lane requires a booking, period.
+		if w.QueueName == bookerReservedLQName {
 			states[w.Name] = admissionCheckState{
 				Name:               BookerCheckName,
 				State:              "Pending",
@@ -350,17 +520,58 @@ func assignBookerStates(workloads []bookerWorkload, credits map[string]map[strin
 			}
 			continue
 		}
+		// 3) Unreserved lane: free capacity after bookings, FIFO with backfill.
+		if gate := unreservedGate(w.Charges, capacity, used); gate != "" {
+			states[w.Name] = admissionCheckState{
+				Name:               BookerCheckName,
+				State:              "Pending",
+				Message:            gate,
+				LastTransitionTime: now,
+			}
+			continue
+		}
 		for lane, charge := range w.Charges {
-			remaining[user][lane] -= charge
+			used[lane] += charge
 		}
 		states[w.Name] = admissionCheckState{
 			Name:               BookerCheckName,
 			State:              "Ready",
-			Message:            "covered by an active booking",
+			Message:            "within free lane capacity",
 			LastTransitionTime: now,
 		}
 	}
 	return states
+}
+
+// unreservedGate returns the gating message for an unreserved workload's
+// charges, or "" when the workload fits: every lane charge must be within
+// the per-node device maximum and within the free lane budget (catalog
+// capacity − active bookings − other unreserved charges granted this pass).
+// Lanes absent from the capacity view fail open (unknown → not enforced).
+func unreservedGate(charges map[string]int, capacity bookerCapacity, used map[string]int) string {
+	lanes := make([]string, 0, len(charges))
+	for lane := range charges {
+		lanes = append(lanes, lane)
+	}
+	sort.Strings(lanes)
+	for _, lane := range lanes {
+		charge := charges[lane]
+		if nodeMax := capacity.NodeMax[lane]; nodeMax > 0 && charge > nodeMax {
+			return fmt.Sprintf("charge %d %s per pod exceeds the per-node maximum of %d — deploy replicas of ≤%d instead", charge, lane, nodeMax, nodeMax)
+		}
+	}
+	for _, lane := range lanes {
+		charge := charges[lane]
+		catalog, known := capacity.Catalog[lane]
+		if !known {
+			continue
+		}
+		free := catalog - capacity.Booked[lane] - used[lane]
+		if charge > free {
+			return fmt.Sprintf("lane %s at capacity: free %d, requested %d (capacity %d, active bookings hold %d, unreserved workloads hold %d) — book it, wait, or reduce the request", lane, free, charge, catalog, capacity.Booked[lane], used[lane])
+		}
+	}
+	return ""
 }
 
 // ensureBookerActive marks the AdmissionCheck active. Kueue refuses to use
@@ -401,9 +612,81 @@ func ensureBookerActive() error {
 	return k8sMergePatch(bookerAPIBase+"/admissionchecks/"+BookerCheckName+"/status", payload)
 }
 
-// reconcileBookerStates is one pass: ensure the check exists, ensure it is
-// active, list reserved-lane workloads, evaluate coverage, and patch changed
-// states.
+// isBookerGateMessage reports whether an admission check message was written
+// by this controller's gating paths (the discriminator for deactivating
+// stale admitted workloads — Kueue's own init messages never match).
+func isBookerGateMessage(msg string) bool {
+	if msg == "" {
+		return false
+	}
+	if strings.HasPrefix(msg, "no active booking covering") {
+		return true
+	}
+	// Our other gate messages end with an actionable hint after an em-dash;
+	// require that signature so foreign messages never trigger deactivation.
+	if !strings.Contains(msg, " — ") {
+		return false
+	}
+	return strings.HasPrefix(msg, "charge ") || strings.HasPrefix(msg, "lane ")
+}
+
+// ensureUnreservedCQCheck wires the booker check into the static unreserved
+// ClusterQueue (the "unreserved" LocalQueues target). Kueue only gates and
+// evicts on checks a CQ references — without this, unreserved workloads
+// admit on cohort borrowing before the enforcer evaluates them. Idempotent;
+// the check is added when the enforcer runs and never removed here (flip
+// BOOKER_ENFORCER_ENABLED off and rebuild the CQ to unwire).
+func ensureUnreservedCQCheck() error {
+	body, err := K8sGet(bookerAPIBase + "/clusterqueues/" + bookerUnreservedCQName)
+	if err != nil {
+		// The static CQ may not exist on clusters without the unreserved
+		// queue layout — warn and continue the pass.
+		slog.Warn("booker: unreserved ClusterQueue not readable, skipping check wiring", "error", err)
+		return nil
+	}
+	var cq struct {
+		Spec struct {
+			Strategy struct {
+				Checks []struct {
+					Name string `json:"name"`
+				} `json:"admissionChecks"`
+			} `json:"admissionChecksStrategy"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(body, &cq); err != nil {
+		return fmt.Errorf("parsing clusterqueue: %w", err)
+	}
+	for _, c := range cq.Spec.Strategy.Checks {
+		if c.Name == BookerCheckName {
+			return nil // already wired
+		}
+	}
+	// Preserve any other controllers' checks — append, never clobber.
+	checks := make([]map[string]any, 0, len(cq.Spec.Strategy.Checks)+1)
+	for _, c := range cq.Spec.Strategy.Checks {
+		checks = append(checks, map[string]any{"name": c.Name})
+	}
+	checks = append(checks, map[string]any{"name": BookerCheckName})
+	payload, err := json.Marshal(map[string]any{
+		"spec": map[string]any{
+			"admissionChecksStrategy": map[string]any{
+				"admissionChecks": checks,
+			},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	if err := k8sMergePatch(bookerAPIBase+"/clusterqueues/"+bookerUnreservedCQName, payload); err != nil {
+		return err
+	}
+	slog.Info("booker: wired check into unreserved ClusterQueue", "clusterqueue", bookerUnreservedCQName)
+	return nil
+}
+
+// reconcileBookerStates is one pass: ensure the check exists and is active,
+// ensure it is wired into the unreserved CQ, list booker-managed workloads,
+// evaluate coverage + free-capacity, and patch changed states.
 func reconcileBookerStates(requesterOf func(ns string) string) error {
 	if err := EnsureBookerAdmissionCheck(); err != nil {
 		return fmt.Errorf("ensuring AdmissionCheck: %w", err)
@@ -411,17 +694,30 @@ func reconcileBookerStates(requesterOf func(ns string) string) error {
 	if err := ensureBookerActive(); err != nil {
 		return fmt.Errorf("ensuring AdmissionCheck active: %w", err)
 	}
+	if err := ensureUnreservedCQCheck(); err != nil {
+		return fmt.Errorf("ensuring unreserved CQ check wiring: %w", err)
+	}
 	laneByClass := laneByClassMap()
 	workloads, err := listBookerWorkloads(laneByClass)
 	if err != nil {
 		return err
 	}
-	credits, err := coverageCredits(time.Now().UTC())
+	reservations, err := getActiveReservationsAt(time.Now().UTC())
 	if err != nil {
 		return fmt.Errorf("loading active reservations: %w", err)
 	}
+	credits := creditsFromReservations(reservations)
+	// The capacity view needs the published slices; a DRA-absent cluster
+	// (nil body, no error) yields an empty view — the unreserved budget then
+	// fails open and only booking coverage is enforced.
+	sliceBody, err := fetchDRASliceBody()
+	if err != nil {
+		slog.Warn("booker: resource slice list unavailable, per-node and budget caps degrade to coverage-only", "error", err)
+		sliceBody = nil
+	}
+	capacity := buildBookerCapacity(database.GetGPUConfig(), reservations, sliceBody)
 
-	states := assignBookerStates(workloads, credits, requesterOf)
+	states := assignBookerStates(workloads, credits, capacity, requesterOf)
 	byName := map[string]bookerWorkload{}
 	for _, w := range workloads {
 		byName[w.Name] = w
@@ -430,19 +726,19 @@ func reconcileBookerStates(requesterOf func(ns string) string) error {
 	for name, desired := range states {
 		w := byName[name]
 		// STALE GENERATION / ADMISSION RACE: an admitted workload whose
-		// charges are uncovered must not hold quota. If the check has
-		// already been patched with the gating message and the workload is
+		// charges are no longer grantable must not hold quota. If the check
+		// has already been patched with a gating message and the workload is
 		// STILL admitted (Kueue had no transition to evict on — it was
-		// admitted before the check existed), depose it: deactivate once,
-		// quota and claim release, the Deployment's replacement hits the
-		// check like any fresh workload.
-		if desired.State == "Pending" && w.Admitted && w.Active && strings.HasPrefix(w.CurrentMessage, "no active booking covering") {
+		// admitted before the check existed or its CQ carried no checks),
+		// depose it: deactivate once, quota and claim release, the
+		// Deployment's replacement hits the check like any fresh workload.
+		if desired.State == "Pending" && w.Admitted && w.Active && isBookerGateMessage(w.CurrentMessage) {
 			if err := deactivateWorkload(w.Namespace, w.Name); err != nil {
 				slog.Error("booker: failed to deactivate stale admitted workload",
 					"workload", name, "namespace", w.Namespace, "error", err)
 				continue
 			}
-			slog.Info("booker: deactivated stale admitted workload (uncovered, pre-enforcement admission)",
+			slog.Info("booker: deactivated stale admitted workload (gated, pre-enforcement admission)",
 				"workload", name, "namespace", w.Namespace)
 			continue
 		}
@@ -460,7 +756,7 @@ func reconcileBookerStates(requesterOf func(ns string) string) error {
 		}
 		patched++
 		if desired.State != "Ready" {
-			slog.Info("booker: workload gated (lane not covered by an active booking)",
+			slog.Info("booker: workload gated (uncovered or over free lane capacity)",
 				"workload", name, "namespace", w.Namespace, "message", desired.Message)
 		}
 	}
