@@ -61,8 +61,10 @@ const GpuUsagePanel: React.FC<GpuUsagePanelProps> = ({ bookings, resources, sele
       }
 
       // Units of this lane whose reserved booking an admitted workload is
-      // actively consuming (user+resource+date matched): rendered as
-      // consumed rather than reserved, without creating booking rows.
+      // actively consuming (user+resource+date matched): counted in the
+      // covered aggregate. Reserved slots stay rendered RED (Mike, 2026-11-26:
+      // "reserved workloads should just stay Red") — the green flip was
+      // reverted; the tooltip/counts carry the covered state instead.
       let covered = 0;
       for (const cu of coveredUsage) {
         if (cu.resource !== r.type || !displayDates.includes(cu.date)) continue;

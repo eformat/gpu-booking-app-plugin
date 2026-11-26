@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/eformat/gpu-booking-plugin/pkg/api"
 	"github.com/eformat/gpu-booking-plugin/pkg/database"
@@ -63,6 +64,17 @@ func main() {
 		}
 	}
 
+	// Booker enforcement (phase-C W4b): AdmissionCheck gating reserved-lane
+	// workloads on active bookings. Flip BOOKER_ENFORCER_ENABLED to false to
+	// disable cluster-wide; the next sync rebuilds CQs without the check.
+	kube.BookerEnforcerEnabled = os.Getenv("BOOKER_ENFORCER_ENABLED") == "true"
+	kube.BookerEnforcerInterval = 30
+	if v := os.Getenv("BOOKER_ENFORCER_INTERVAL"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			kube.BookerEnforcerInterval = n
+		}
+	}
+
 	// Dev mode (anonymous admin access when outside cluster)
 	api.DevMode = os.Getenv("DEV_MODE") == "true"
 	if api.DevMode {
@@ -97,6 +109,9 @@ func main() {
 	kube.InitK8sClient()
 	kube.InitDiscovery()
 	kube.InitKueueSync()
+	if kube.BookerEnforcerEnabled {
+		go kube.RunBookerEnforcer(time.Duration(kube.BookerEnforcerInterval) * time.Second)
+	}
 	kube.InitReservationSync()
 
 	// Router

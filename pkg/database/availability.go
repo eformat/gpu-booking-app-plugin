@@ -57,9 +57,19 @@ var migLaneMaxima = map[string]int{
 // returns the feasibility refusal ("" when feasible). Fails open on a DB
 // error — the DRA scheduler's counter exclusivity remains the final
 // authority at activation.
+//
+// Only source='reserved' rows count: bookings compete with other BOOKINGS.
+// source='consumed' rows are the sync's record of live uncovered usage —
+// evictable, not a reservation — so they must not veto a booking's
+// feasibility (phase-C semantics: an active booking makes room by evicting
+// unbooked workloads holding its lanes, W4b). Counting consumed rows here
+// made unbooked usage block reservations indefinitely: a stale 4-GPU
+// workload turned a feasible 15-GPU booking into board_capacity_exceeded.
 func CheckDateCapacity(date string, delta map[string]int) string {
 	totals := map[string]int{}
-	rows, err := DB().Query("SELECT resource, COUNT(*) FROM bookings WHERE date = ? GROUP BY resource", date)
+	rows, err := DB().Query(
+		"SELECT resource, COUNT(*) FROM bookings WHERE date = ? AND source = ? GROUP BY resource",
+		date, SourceReserved)
 	if err != nil {
 		return ""
 	}
