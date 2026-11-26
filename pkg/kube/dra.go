@@ -5,11 +5,18 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/eformat/gpu-booking-plugin/pkg/database"
 )
+
+// migVariantRE matches the media-extension MIG profile variants (+me, -me,
+// and their .all spellings) — excluded from the product surface (Mike,
+// 2026-11-26), same filter as hack/generate-kueue-agnostic.py. Their '+'
+// spellings are also illegal in k8s class names.
+var migVariantRE = regexp.MustCompile(`(\+me|-me)(\.all|-all)?$`)
 
 // DRA discovery: reads resource.k8s.io/v1 ResourceSlices published by the
 // NVIDIA DRA driver (DeviceClass gpu.nvidia.com) and maps consumable-share
@@ -417,6 +424,16 @@ func parseDRASlices(body []byte, hasGPUQuotaName bool) []database.GPUResourceSpe
 				if len(dev.ConsumesCounters) > 0 {
 					counterSet = dev.ConsumesCounters[0].CounterSet
 				}
+				if DRAQuotaNaming == "profile" && migVariantRE.MatchString(profile) {
+					// Media-extension variants (+me / -me / +me.all): excluded
+					// from the product surface in PROFILE mode (the dynamic
+					// lab — Mike, 2026-11-26), matching
+					// hack/generate-kueue-agnostic.py's matrix. PRODUCT mode
+					// (ocp5-3 convention) is untouched: the A100 live surface
+					// publishes 1g.5gb+me devices and its tested behavior
+					// keeps them (TestParseDRASlices_LiveFixture pins this).
+					continue
+				}
 				migParts = append(migParts, migPartition{
 					product:    product,
 					profile:    profile,
@@ -519,8 +536,11 @@ func parseDRASlices(body []byte, hasGPUQuotaName bool) []database.GPUResourceSpe
 	// "nvidia.com/gpu" quota name is kept (matches the deviceClassMappings
 	// convention verified on ocp5-3). Otherwise groups get product-derived
 	// logical quota names so ClusterQueue quotas and Kueue flavor usage stay
-	// unambiguous per catalog entry.
-	qualifyNames := hasGPUQuotaName || len(groups) > 1
+	// unambiguous per catalog entry. PROFILE mode (the dynamic lab) always
+	// qualifies: the static layer's fold (`gpu`) and `mig-<profile>` lanes
+	// are pre-provisioned regardless of group count, so the derivation must
+	// never fall back to the single-product convention mid-swap.
+	qualifyNames := DRAQuotaNaming == "profile" || hasGPUQuotaName || len(groups) > 1
 
 	var specs []database.GPUResourceSpec
 	for _, key := range order {
@@ -578,27 +598,39 @@ func isolationKind(shared bool) string {
 	return "dedicated"
 }
 
-// draLogicalQuotaName derives a stable, Kueue-safe quota resource name from
-// the device product (and MIG profile, for partition entries), e.g.
-// "NVIDIA A100-SXM4-40GB" (shared) -> "a100-sxm4-40gb-share",
-// "NVIDIA A100-SXM4-40GB" MIG profile "1g.12gb" -> "a100-sxm4-40gb-mig-1g-12gb".
-// Stable across node counts, pool churn and re-partitioning.
+// draLogicalQuotaName derives a stable, Kueue-safe quota resource name.
+//
+// Product mode (DRAQuotaNaming "product", the default — ocp5-3 convention,
+// matches that cluster's deviceClassMappings):
+//   "NVIDIA A100-SXM4-40GB" (shared) -> "a100-sxm4-40gb-share",
+//   "NVIDIA A100-SXM4-40GB" MIG profile "1g.12gb" -> "a100-sxm4-40gb-mig-1g-12gb".
+//
+// Profile mode (DRAQuotaNaming "profile", the dynamic fake-GPU lab): the
+// static layer speaks PROFILE, never product — a product swap via the
+// gpu-config-plugin finds its deviceClassMappings and CQ lanes already
+// pre-provisioned by hack/generate-kueue-agnostic.py, so Kueue is never
+// edited or restarted for swaps:
+//   MIG profile "7g.141gb"          -> "mig-7g-141gb"
+//   dedicated whole device          -> "gpu" (the fold)
+//   shared whole device             -> "gpu-share" (shares-disabled lab:
+//                                      never exercised, kept distinguishable)
+//
+// Both modes are stable across node counts, pool churn and re-partitioning.
 func draLogicalQuotaName(product string, shared bool, profile string) string {
+	if DRAQuotaNaming == "profile" {
+		if profile != "" {
+			return "mig-" + sanitizeQuotaName(profile)
+		}
+		if shared {
+			return "gpu-share"
+		}
+		return "gpu"
+	}
 	base := product
 	if profile != "" {
 		base = product + "-mig-" + profile
 	}
-	var b strings.Builder
-	for _, r := range strings.ToLower(base) {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
-			b.WriteRune(r)
-		default:
-			b.WriteByte('-')
-		}
-	}
-	normalized := strings.Trim(b.String(), "-")
-	normalized = strings.TrimPrefix(normalized, "nvidia-")
+	normalized := sanitizeQuotaName(base)
 	if normalized == "" {
 		normalized = "gpu"
 	}
@@ -611,6 +643,23 @@ func draLogicalQuotaName(product string, shared bool, profile string) string {
 		return normalized + "-share"
 	}
 	return normalized + "-gpu"
+}
+
+// sanitizeQuotaName lowercases and collapses every non-[a-z0-9] rune to '-'
+// (the k8s-name-safe normalization the generator mirrors; '+' in media-
+// extension variants becomes '-', though variants are filtered upstream).
+func sanitizeQuotaName(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	normalized := strings.Trim(b.String(), "-")
+	return strings.TrimPrefix(normalized, "nvidia-")
 }
 
 // parseMemoryMi parses a Quantity string into MiB (partition capacities and

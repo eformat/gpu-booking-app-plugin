@@ -78,9 +78,13 @@ var (
 	KueueSyncEnabled  bool
 	KueueSyncInterval int
 	KueueBookingDays  int
-	k8sHost           string
-	k8sToken          string
-	k8sHTTPClient     *http.Client
+	// DRAQuotaNaming selects the lane-name scheme for DRA catalog entries:
+	// "product" (default, ocp5-3 convention) or "profile" (dynamic-lab
+	// agnostic scheme — see draLogicalQuotaName).
+	DRAQuotaNaming string
+	k8sHost        string
+	k8sToken       string
+	k8sHTTPClient  *http.Client
 )
 
 func InitK8sClient() {
@@ -186,6 +190,10 @@ func initK8sFromKubeconfig() bool {
 			Cluster struct {
 				Server                   string `json:"server"`
 				CertificateAuthorityData string `json:"certificate-authority-data"`
+				// Sandbox/lab kubeconfigs commonly use insecure-skip-tls-verify
+				// (no CA data) — honor it for the out-of-cluster dev/dry-run
+				// path; the in-cluster path is untouched.
+				InsecureSkipVerify bool `json:"insecure-skip-tls-verify"`
 			} `json:"cluster"`
 		} `json:"clusters"`
 		Users []struct {
@@ -211,6 +219,9 @@ func initK8sFromKubeconfig() bool {
 	k8sToken = kc.Users[0].User.Token
 
 	tlsConfig := &tls.Config{}
+	if kc.Clusters[0].Cluster.InsecureSkipVerify {
+		tlsConfig.InsecureSkipVerify = true
+	}
 	if caData := kc.Clusters[0].Cluster.CertificateAuthorityData; caData != "" {
 		caCert, err := base64.StdEncoding.DecodeString(caData)
 		if err == nil {

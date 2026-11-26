@@ -48,6 +48,23 @@ func main() {
 			kube.KueueSyncInterval = n
 		}
 	}
+	// DRA quota naming mode (see hack/generate-kueue-agnostic.py in
+	// gpu-resource-mgmt-automation): "product" (default) keeps today's
+	// product-derived names (ocp5-3 convention, deviceClassMappings match);
+	// "profile" is the dynamic-lab mode — the static layer speaks PROFILE
+	// never product (fold `gpu`, lanes `mig-<profile>`), so product swaps
+	// via the config plugin never touch Kueue.
+	kube.DRAQuotaNaming = os.Getenv("DRA_QUOTA_NAMING")
+	if kube.DRAQuotaNaming == "" {
+		kube.DRAQuotaNaming = "product"
+	}
+	// Reservation sync (per-reservation CQs + cohort capacity writes).
+	// Default on — in-cluster behavior unchanged; RESERVATION_SYNC_ENABLED=
+	// false is the dry-run/maintenance switch (out-of-cluster sessions must
+	// not write to the live cluster).
+	if v := os.Getenv("RESERVATION_SYNC_ENABLED"); v != "" {
+		kube.ReservationSyncEnabled = v == "true"
+	}
 	kube.KueueBookingDays = 0
 	if v := os.Getenv("KUEUE_BOOKING_DAYS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {

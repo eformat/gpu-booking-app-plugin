@@ -819,3 +819,116 @@ func TestParseDRASlices_FlexWholeParentsAndMenuFilter(t *testing.T) {
 		t.Errorf("expected exactly 1 MIG lane (+me filtered), got %d: %v", len(mig), mig)
 	}
 }
+
+// TestDRAQuotaNaming_Modes pins the lane-name scheme switch: "product"
+// (default — ocp5-3 convention, byte-identical to the pre-agnostic behavior)
+// vs "profile" (the dynamic-lab agnostic scheme matched to
+// hack/generate-kueue-agnostic.py's matrix: fold `gpu`, lanes `mig-<profile>`).
+func TestDRAQuotaNaming_Modes(t *testing.T) {
+	cases := []struct {
+		product string
+		shared  bool
+		profile string
+		product_ string // expected in product mode
+		profile_ string // expected in profile mode
+	}{
+		{"NVIDIA H200", false, "", "h200-gpu", "gpu"},
+		{"NVIDIA H200", true, "", "h200-share", "gpu-share"},
+		{"NVIDIA H200", false, "7g.141gb", "h200-mig-7g-141gb", "mig-7g-141gb"},
+		{"NVIDIA H100", false, "1g.18gb", "h100-mig-1g-18gb", "mig-1g-18gb"},
+		{"NVIDIA A100-SXM4-40GB", false, "1g.12gb", "a100-sxm4-40gb-mig-1g-12gb", "mig-1g-12gb"},
+	}
+	for _, tc := range cases {
+		DRAQuotaNaming = "product"
+		if got := draLogicalQuotaName(tc.product, tc.shared, tc.profile); got != tc.product_ {
+			t.Errorf("product mode: draLogicalQuotaName(%q,%v,%q) = %q, want %q",
+				tc.product, tc.shared, tc.profile, got, tc.product_)
+		}
+		DRAQuotaNaming = "profile"
+		if got := draLogicalQuotaName(tc.product, tc.shared, tc.profile); got != tc.profile_ {
+			t.Errorf("profile mode: draLogicalQuotaName(%q,%v,%q) = %q, want %q",
+				tc.product, tc.shared, tc.profile, got, tc.profile_)
+		}
+	}
+	DRAQuotaNaming = "product"
+}
+
+// TestParseDRASlices_MediaVariantsFiltered pins the media-extension variant
+// exclusion (+me / -me / +me.all — Mike, 2026-11-26): variants never become
+// catalog lanes, so the app never creates their DeviceClasses (whose '+'
+// spellings are illegal k8s names) and never emits lanes the generated
+// kueue-cr matrix deliberately omits.
+func TestParseDRASlices_MediaVariantsFiltered(t *testing.T) {
+	body := []byte(`{
+	  "items": [{
+	    "spec": {
+	      "driver": "gpu.nvidia.com",
+	      "nodeName": "node-a",
+	      "pool": {"name": "node-a", "resourceSliceCount": 1},
+	      "devices": [
+	        {"name": "gpu-0", "attributes": {
+	          "productName": {"string": "NVIDIA H200"},
+	          "type": {"string": "gpu"},
+	          "uuid": {"string": "GPU-0"}
+	        }},
+	        {"name": "slice-base", "attributes": {
+	          "productName": {"string": "NVIDIA H200"},
+	          "type": {"string": "mig"},
+	          "profile": {"string": "7g.141gb"}
+	        },
+	        "consumesCounters": [{"counterSet": "gpu-1", "counters": {"memory": {"value": 143360}}}]},
+	        {"name": "slice-variant", "attributes": {
+	          "productName": {"string": "NVIDIA H200"},
+	          "type": {"string": "mig"},
+	          "profile": {"string": "1g.18gb+me"}
+	        },
+	        "consumesCounters": [{"counterSet": "gpu-2", "counters": {"memory": {"value": 16384}}}]},
+	        {"name": "slice-variant-all", "attributes": {
+	          "productName": {"string": "NVIDIA H200"},
+	          "type": {"string": "mig"},
+	          "profile": {"string": "2g.70gb+me.all"}
+	        },
+	        "consumesCounters": [{"counterSet": "gpu-3", "counters": {"memory": {"value": 71168}}}]}
+	      ]
+	    }
+	  }]
+	}`)
+	// The variant filter is PROFILE-mode (the lab): switch, parse, assert —
+	// deferred restore so a Fatalf can't leak the mode into other tests.
+	DRAQuotaNaming = "profile"
+	defer func() { DRAQuotaNaming = "product" }()
+	specs := parseDRASlices(body, true)
+	for _, spec := range specs {
+		if spec.Profile == "1g.18gb+me" || spec.Profile == "2g.70gb+me.all" {
+			t.Fatalf("media-extension variant %q must be filtered from the catalog", spec.Profile)
+		}
+	}
+	found := false
+	for _, spec := range specs {
+		if spec.Profile == "7g.141gb" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("base profile 7g.141gb missing from the catalog; specs=%+v", specs)
+	}
+	// PRODUCT-mode non-regression is pinned by TestParseDRASlices_LiveFixture
+	// (the A100 live surface publishes 1g.5gb+me and keeps it — menu-listed);
+	// H200 variants are menu-filtered in product mode regardless (pre-existing).
+}
+
+// TestMigDeviceClassName_Sanitized pins the class-name normalization: illegal
+// runes ('+' in media-extension variants) collapse to '-', matching
+// sanitizeQuotaName and the generator's lane naming.
+func TestMigDeviceClassName_Sanitized(t *testing.T) {
+	cases := map[string]string{
+		"7g.141gb":   "mig.nvidia.com-7g-141gb",
+		"1g.18gb":    "mig.nvidia.com-1g-18gb",
+		"1g.18gb+me": "mig.nvidia.com-1g-18gb-me", // filtered upstream; sanitize anyway
+	}
+	for in, want := range cases {
+		if got := migDeviceClassName(in); got != want {
+			t.Errorf("migDeviceClassName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

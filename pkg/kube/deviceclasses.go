@@ -3,7 +3,6 @@ package kube
 import (
 	"fmt"
 	"log/slog"
-	"strings"
 
 	"github.com/eformat/gpu-booking-plugin/pkg/database"
 )
@@ -31,7 +30,11 @@ const (
 // lane: the dotted profile attribute (7g.141gb) becomes the k8s-name-safe
 // dashed form, matching the entries pre-provisioned in kueue-cr.yaml.
 func migDeviceClassName(profile string) string {
-	return "mig.nvidia.com-" + strings.ReplaceAll(profile, ".", "-")
+	// Defense in depth: k8s names allow [a-z0-9-] only — media-extension
+	// variants ('+' in e.g. "1g.18gb+me") are filtered upstream, but any
+	// stray illegal rune still normalizes instead of producing an invalid
+	// class name.
+	return "mig.nvidia.com-" + sanitizeQuotaName(profile)
 }
 
 // deviceClassManifest builds the selecting DeviceClass for one MIG profile.

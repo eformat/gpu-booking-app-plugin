@@ -124,6 +124,13 @@ func InitReservationSync() {
 		slog.Info("reservation sync: not running in-cluster, disabling")
 		return
 	}
+	if !ReservationSyncEnabled {
+		// Hard env off (RESERVATION_SYNC_ENABLED=false): dry-run/maintenance
+		// mode — no loops start, so nothing can write to the cluster. The
+		// admin runtime toggle cannot override a hard env off.
+		slog.Info("reservation sync: disabled by RESERVATION_SYNC_ENABLED=false")
+		return
+	}
 	slog.Info("reservation sync: enabled", "cleaner_interval", "2m")
 	go reservationCleanerLoop()
 }
